@@ -20,3 +20,7 @@ bzImage
 *~
 *.swp
 .DS_Store
+
+# 构建制品（bzImage / 模块 / 中间产物）
+# 这些不进入 git 仓库; 需要分发时作为 GitHub Release 附件上传
+/artifacts/

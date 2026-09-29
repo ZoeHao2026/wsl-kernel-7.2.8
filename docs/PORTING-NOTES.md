@@ -366,18 +366,58 @@ sha256sum arch/x86/boot/bzImage
 
 ---
 
-## 6. 未验证事项
+### 5.1 真机启动验证
 
-以下**未**在本次工作中验证，使用者需自行确认：
+在上述构建产物基础上，实际部署到 WSL2 并启动测试。
 
-1. **真机启动** — 未在真实 WSL 上加载该内核测试。构建成功不等于能启动。
-2. **GPU 直通** — WSLg 硬件加速能否工作取决于 Windows 侧显卡驱动是否支持 D3D12
-   与 GPU-PV，**与内核无关**。若 `dmesg` 出现
-   `dxgkio_query_adapter_info: Ioctl failed: -22`，说明是 Windows 驱动过旧，
-   而不是内核问题。
-3. **模块 VHDX 生成** — 需 `Microsoft/scripts/gen_modules_vhdx.sh`，
-   未包含在本仓库中。
-4. **嵌套虚拟化 / KVM** — 未验证 Hyper-V 嵌套下的 KVM 行为。
+**测试环境**：WSL 2.7.10.0 / Windows 11 (10.0.26200) / Intel Meteor Lake 核显
+
+配置方式：`.wslconfig` 指向新内核与模块 VHDX，`wsl --shutdown` 后重启。
+**注意路径必须用正斜杠**（见第 6 节的踩坑记录）。
+
+| 验证项 | 命令 / 依据 | 结果 |
+|---|---|---|
+| 内核版本 | `uname -r` | ✅ `7.2.8-microsoft-standard-WSL2` |
+| 启动日志致命错误 | `dmesg \| grep -iE 'panic\|BUG:\|Oops\|Call Trace'` | ✅ 无 |
+| init 系统 | `systemctl is-system-running` | ✅ `running` |
+| 失败单元 | `systemctl --failed` | ✅ 0 个 |
+| AppArmor | `aa-status` | ✅ 178 profile 加载 / 102 enforce |
+| securityfs | `findmnt /sys/kernel/security` | ✅ 已挂载 |
+| 模块数量 | `find /usr/lib/modules/$(uname -r) -name '*.ko*'` | ✅ 964 个 |
+| 模块加载/卸载 | `modprobe` / `modprobe -r` | ✅ wireguard、zram、kvm_intel 双向正常 |
+| dxgkrnl 注册 | `dmesg \| grep dxgkrnl` | ✅ `hv_vmbus: registering driver dxgkrnl` |
+| GPU 设备节点 | `ls /dev/dxg` | ✅ 存在 |
+| KVM 嵌套 | `/sys/module/kvm_intel/parameters/nested` | ✅ `Y` |
+| 网络模式 | `wslinfo --networking-mode` | ✅ `mirrored` |
+| 出网 | `curl -I https://www.kernel.org/` | ✅ 200 |
+| 代理注入 | `env \| grep proxy` | ✅ 自动注入 |
+| Windows 互操作 | `/mnt/c`、`powershell.exe` | ✅ 可用 |
+| WSLg GUI | 启动 Tk 窗口程序 | ✅ 窗口创建并正常销毁 |
+| 音频 | `pactl info` | ✅ `Default Sink: RDPSink` |
+| 时间同步 | `timedatectl` | ✅ 与宿主一致 |
+| 内存 / swap | `free -h` / `swapon --show` | ✅ 15 GiB + 4 GiB |
+| 负载测试 | 4 个 CPU 密集进程并发 | ✅ 正常完成，无 OOM |
+
+**结论**：内核可正常启动并完整工作，dxgkrnl、AppArmor、模块、网络、WSLg 全部就绪。
+
+### 5.2 观测到的非缺陷现象
+
+以下消息在启动日志中出现，但**均非本内核引入的缺陷**：
+
+| 消息 | 说明 |
+|---|---|
+| `PCI: System does not support PCI` / `No config space access function found` | WSL2 是虚拟化环境，无传统 PCI 配置空间。7.1.4 同样存在 |
+| `dxgkio_query_adapter_info: Ioctl failed: -22` ×10 | **Windows 侧显卡驱动过旧**，无法完成适配器查询。7.1.4 上完全相同的 10 次 |
+| `vmentry_ctrl / vmexit_ctrl unsupported with eVMCS` | KVM 在 Hyper-V 嵌套下的信息性提示。7.1.4 上同样存在 |
+| `TCP: loopback0: Driver has suspect GRO implementation` | mirrored 网络模式的 loopback 告警，非致命 |
+| `journal ... corrupted or uncleanly shut down` | `wsl --shutdown` 直接终止 VM，journald 来不及收尾。**非内核问题**，且本次启动新增残留为 0 |
+
+### 5.3 未验证事项
+
+1. **GPU 硬件加速** — 未启用，但取决于 Windows 显卡驱动而非内核。`dxgkrnl` 侧已就绪。
+2. **其他硬件** — 仅在 Intel Meteor Lake 核显上测试，未覆盖 NVIDIA / AMD。
+3. **Hyper-V 嵌套与嵌套虚拟化** — 未做深入测试（`/dev/kvm` 与 `nested=Y` 已确认存在）。
+4. **其他发行版** — 仅在 Ubuntu 26.04 上验证。
 
 ---
 
@@ -388,3 +428,54 @@ sha256sum arch/x86/boot/bzImage
 - [Intel: Intel® Arc™ Graphics Are Not Detected under WSL2](https://www.intel.com/content/www/us/en/support/articles/000094038/graphics.html)
 - [microsoft/WSL#13295 — GPU Passthrough fails for Intel Arc on Meteor Lake](https://github.com/microsoft/WSL/issues/13295)
 - 内核 `scripts/setlocalversion`（版本串构造逻辑）
+
+---
+
+## 8. 部署踩坑：`.wslconfig` 的路径必须用正斜杠
+
+这是一个**会静默失败**的陷阱，实测踩到，值得单独记录。
+
+### 现象
+
+按微软官方文档的写法使用双反斜杠：
+
+```ini
+[wsl2]
+kernel=C:\\Users\\me\\bzImage-7.2.8-microsoft-standard-WSL2
+kernelModules=C:\\Users\\me\\modules-7.2.8.vhdx
+```
+
+WSL 启动时报：
+
+```
+wsl: 无法解析 C:\Users\me\.wslconfig 第 2 行，忽略该行
+wsl: 无法解析 C:\Users\me\.wslconfig 第 3 行，忽略该行
+```
+
+单反斜杠同样被拒。**只有正斜杠可用**：
+
+```ini
+kernel=C:/Users/me/bzImage-7.2.8-microsoft-standard-WSL2
+kernelModules=C:/Users/me/modules-7.2.8.vhdx
+```
+
+### 为什么危险
+
+WSL **不会**因为配置无效而报错退出，而是**静默回退到微软自带内核**：
+
+```
+$ wsl -d Ubuntu-26.04 -- uname -r
+6.18.33.2-microsoft-standard-WSL2      ← 根本不是我们的内核
+```
+
+如果不核对 `uname -r`，会以为自定义内核"启动成功了"，实际上跑的是自带内核，
+后续所有"验证通过"的结论都是假的。
+
+### 对策
+
+1. 一律使用**正斜杠**
+2. 切换后**必须**用 `uname -r` 确认内核版本
+3. 排查时留意 `wsl` 命令的 stderr——它在输出里混着这类中文告警，容易被忽略
+
+> 环境记录：WSL 2.7.10.0 + `networkingMode=mirrored`。可能是该版本在 mirrored 模式下
+> 的解析差异，但无论原因如何，正斜杠是所有情况下都能工作的写法。

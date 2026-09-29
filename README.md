@@ -36,7 +36,7 @@ Microsoft 的 WSL2 内核补丁**只针对 6.18 分支**维护，官方仓库没
 
 ## 移植内容
 
-从 WSL 6.18 移植到 7.2.8 的全部改动，共 **25 个文件**（16 个新增 + 9 个修改）：
+从 WSL 6.18 移植到 7.2.8 的全部改动，共 **26 个文件**：
 
 ### 新增：dxgkrnl 驱动（15 个文件）
 
@@ -185,8 +185,8 @@ make modules_install INSTALL_MOD_PATH=./modules-root INSTALL_MOD_STRIP=1
 
 ```ini
 [wsl2]
-kernel=C:\\path\\to\\bzImage-7.2.8
-kernelModules=C:\\path\\to\\modules-7.2.8.vhdx
+kernel=C:/path/to/bzImage-7.2.8-microsoft-standard-WSL2
+kernelModules=C:/path/to/modules-7.2.8-microsoft-standard-WSL2.vhdx
 networkingMode=mirrored
 dnsTunneling=true
 autoProxy=true
@@ -194,6 +194,43 @@ firewall=true
 ```
 
 4. `wsl --shutdown` 后重启发行版
+
+### ⚠️ `.wslconfig` 的路径必须用正斜杠
+
+这是实测踩到的坑，**不是可选的写法偏好**：
+
+```ini
+# ❌ 会被拒绝，WSL 静默回退到自带内核
+kernel=C:\Users\me\bzImage-7.2.8-microsoft-standard-WSL2
+kernelModules=C:\Users\me\modules-7.2.8.vhdx
+
+# ✅ 正确
+kernel=C:/Users/me/bzImage-7.2.8-microsoft-standard-WSL2
+kernelModules=C:/Users/me/modules-7.2.8.vhdx
+```
+
+用反斜杠时 WSL 会报：
+
+```
+wsl: 无法解析 C:\Users\me\.wslconfig 第 2 行，忽略该行
+wsl: 无法解析 C:\Users\me\.wslconfig 第 3 行，忽略该行
+```
+
+然后**回退到微软自带内核**（如 `6.18.33.2-microsoft-standard-WSL2`），而不会报错退出。
+如果没注意到 `uname -r` 的变化，会误以为自定义内核"启动成功了"，其实跑的根本不是它。
+
+> 注：微软官方文档示例使用双反斜杠 `C:\\path\\...`。但在实测环境中单反斜杠与
+> 双反斜杠都会被拒，只有正斜杠可用——可能是 WSL 2.7.10 在 `mirrored` 网络模式下
+> 的解析差异。稳妥做法是**始终用正斜杠**，并在切换后用 `uname -r` 确认。
+
+### 切换后必做的确认
+
+```powershell
+wsl --shutdown
+wsl -d <发行版> -- uname -r     # 必须显示 7.2.8-microsoft-standard-WSL2
+```
+
+如果显示的不是 7.2.8，说明配置被忽略了，内核并未切换。
 
 ### 配套的 AppArmor 设置
 
@@ -263,15 +300,56 @@ aa-status | head -3                      # 期望列出已加载 profile
 
 ## 验证状态
 
-| 项目 | 状态 |
+### 构建验证 ✅
+
+| 项目 | 结果 |
 |---|---|
 | 配置收敛 (`olddefconfig`) | ✅ 通过 |
-| 完整构建 | 见 [docs/PORTING-NOTES.md](docs/PORTING-NOTES.md) |
-| dxgkrnl 编入内核 | 见 PORTING-NOTES |
-| 真机启动 | 未验证（需自行在 WSL 中测试） |
+| 完整构建 | ✅ 退出码 0，**0 错误 / 0 警告** |
+| 模块 | 964 个 `.ko`，vermagic 一致 |
+| 版本串 | `7.2.8-microsoft-standard-WSL2`（无多余后缀）|
 
-> **注意**：本移植经过构建验证，但**未在真实 WSL 上启动测试**。GPU 直通能否工作
-> 取决于 Windows 侧显卡驱动（需要支持 D3D12 的较新驱动），与内核无关。
+### 真机启动验证 ✅
+
+已在 WSL2（WSL 2.7.10.0 / Windows 11 26200）上实际启动并完成功能测试：
+
+| 项目 | 结果 |
+|---|---|
+| 内核启动 | ✅ `7.2.8-microsoft-standard-WSL2` |
+| 启动日志 | ✅ **无 panic / BUG / oops / Call Trace** |
+| systemd | ✅ `running`，**0 个失败单元** |
+| AppArmor | ✅ **178 个 profile 加载**（102 个 enforce），securityfs 已挂载 |
+| 模块子系统 | ✅ 964 个模块可用；`wireguard`/`zram`/`kvm_intel` 加载与卸载均正常 |
+| dxgkrnl | ✅ `hv_vmbus: registering driver dxgkrnl`，`/dev/dxg` 就绪 |
+| KVM 嵌套虚拟化 | ✅ `/dev/kvm` 存在，`nested = Y` |
+| 网络 | ✅ `mirrored` 模式、DNS 隧道、代理自动注入、HTTPS 出网均正常 |
+| 互操作 | ✅ `/mnt/c` (9p)、`powershell.exe` 可用 |
+| WSLg | ✅ **真实 GUI 程序（Tk 窗口）创建并正常销毁** |
+| 音频 | ✅ `pactl` 连通，`Default Sink: RDPSink` |
+| 时间同步 | ✅ 与 Windows 宿主一致（`hv_utils.timesync_implicit=1`）|
+| 内存 / swap | ✅ 15 GiB 内存 + 4 GiB swap 正常挂载 |
+
+详细测试记录见 [docs/PORTING-NOTES.md](docs/PORTING-NOTES.md)。
+
+### 仍需注意
+
+**GPU 硬件加速未启用**，但这与内核无关：
+
+```
+/dev/dri             不存在
+glxinfo              Accelerated: no (llvmpipe 软件渲染)
+dmesg                dxgkio_query_adapter_info: Ioctl failed: -22
+```
+
+`dxgkrnl` 已正确注册并工作，是 **Windows 侧显卡驱动过旧**导致无法完成适配器查询。
+本机实测：Intel Arc 当前绑定 2024 年的驱动 `32.0.101.5763`，而 DriverStore 中已有
+2026 年的 `32.0.101.8991` 未激活。更新 Windows 显卡驱动后即可启用。
+
+参见 [Intel 官方说明](https://www.intel.com/content/www/us/en/support/articles/000094038/graphics.html)
+与 [microsoft/WSL#13295](https://github.com/microsoft/WSL/issues/13295)。
+
+**其他未验证项**：仅在此一台机器（Intel Meteor Lake 核显、WSL 2.7.10）上测试过，
+未覆盖 NVIDIA/AMD 显卡、Hyper-V 嵌套、其他发行版等场景。
 
 ---
 
