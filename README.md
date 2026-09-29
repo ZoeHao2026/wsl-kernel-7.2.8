@@ -117,6 +117,23 @@ u32 cmd_size = object_size + fence_size - sizeof(u64) + sizeof(...);
 
 ---
 
+## 直接下载预编译内核
+
+不想自己编译的话，可以直接取预编译二进制：
+
+**<https://github.com/ZoeHao2026/wsl-kernel-7.2.8/releases/latest>**
+
+| 附件 | 用途 |
+|---|---|
+| `bzImage-7.2.8-microsoft-standard-WSL2` | 内核镜像 → `.wslconfig` 的 `kernel=` |
+| `modules-7.2.8-microsoft-standard-WSL2.vhdx` | 模块盘（964 个模块）→ `kernelModules=` |
+| `System.map-7.2.8-microsoft-standard-WSL2` | 符号表，调试用 |
+| `config-7.2.8-microsoft-standard-WSL2` | 构建所用的完整配置 |
+
+校验值见 release 说明页。下载后按下方「部署到 WSL」配置即可。
+
+---
+
 ## 构建
 
 ### 依赖
