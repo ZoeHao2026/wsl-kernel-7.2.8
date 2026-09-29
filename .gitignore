@@ -1,0 +1,22 @@
+# 内核源码树（由使用者自行下载，不纳入版本控制）
+/linux/
+/build/
+
+# 构建产物
+*.o
+*.a
+*.ko
+*.mod
+*.mod.c
+*.cmd
+*.symvers
+*.order
+vmlinux
+System.map
+bzImage
+*.vhdx
+
+# 编辑器 / 系统垃圾
+*~
+*.swp
+.DS_Store

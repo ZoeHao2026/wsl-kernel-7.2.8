@@ -1,0 +1,8 @@
+# 构建产物校验值 (2026-09-29)
+# 内核: 7.2.8-microsoft-standard-WSL2
+
+7272a5747c90af1f607e0c3ac7cf1e907612fdd520852bc50965279aae1a2ff0  bzImage-7.2.8-microsoft-standard-WSL2
+c6d6d27c96b91b152dfb2f9cdf3a228f5560c00069e03cef9ef825a914ec6f6f  vmlinux-7.2.8-microsoft-standard-WSL2
+
+# 上游源码基线
+12e8d5a973d1ad7c5a5c69882e4022b131ed715db7003fdcd760ddf8c3e51941  linux-7.2.8.tar.xz

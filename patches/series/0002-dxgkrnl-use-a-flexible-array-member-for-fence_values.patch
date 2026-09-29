@@ -1,0 +1,71 @@
+From f34bd6c2aed36287ff8181158d660182805a4828 Mon Sep 17 00:00:00 2001
+From: ZoeHao2026 <ZoeHao2026@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 22:45:49 +0800
+Subject: [PATCH 2/3] dxgkrnl: use a flexible array member for fence_values
+
+struct dxgkvmb_command_waitforsyncobjectfromgpu declares
+'u64 fence_values[1]' but the buffer is used as a variable-length
+trailer: the caller copies object_count fences at fence_values and then
+object_count d3dkmthandle entries immediately after it.
+
+A trailing array with a fixed size of 1 makes the object look like a
+fixed-size struct whose last member spans the variable trailer, which
+FORTIFY_SOURCE reports as a field-spanning write. It also makes the
+sizeof-based command sizing arithmetic misleading.
+
+Switch to a proper flexible array member and fix the two places that
+depended on the old shape:
+
+ - cmd_size: drop the bogus '- sizeof(u64)'. With a flexible array the
+   header no longer embeds a fence slot, so the trailer must be
+   accounted for in full.
+ - current_pos: address the trailer via '&command[1]' instead of
+   'command->fence_values'. Both denote the same address for this
+   layout, but the former states the intent without depending on the
+   flexible member's offset.
+
+The resulting buffer sizes are unchanged, so the VMBus wire format and
+the host contract are unaffected.
+---
+ drivers/hv/dxgkrnl/dxgvmbus.c | 4 ++--
+ drivers/hv/dxgkrnl/dxgvmbus.h | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/hv/dxgkrnl/dxgvmbus.c b/drivers/hv/dxgkrnl/dxgvmbus.c
+index 21e782e79..6e78d749c 100644
+--- a/drivers/hv/dxgkrnl/dxgvmbus.c
++++ b/drivers/hv/dxgkrnl/dxgvmbus.c
+@@ -3069,7 +3069,7 @@ int dxgvmb_send_wait_sync_object_gpu(struct dxgprocess *process,
+ 	u32 fence_size = object_count * sizeof(u64);
+ 	u32 object_size = object_count * sizeof(struct d3dkmthandle);
+ 	u8 *current_pos;
+-	u32 cmd_size = object_size + fence_size - sizeof(u64) +
++	u32 cmd_size = object_size + fence_size +
+ 	    sizeof(struct dxgkvmb_command_waitforsyncobjectfromgpu);
+ 	struct dxgvmbusmsg msg = {.hdr = NULL};
+ 	struct dxgglobal *dxgglobal = dxggbl();
+@@ -3089,7 +3089,7 @@ int dxgvmb_send_wait_sync_object_gpu(struct dxgprocess *process,
+ 	command->context = context;
+ 	command->object_count = object_count;
+ 	command->legacy_fence_object = legacy_fence;
+-	current_pos = (u8 *) command->fence_values;
++	current_pos = (u8 *)&command[1];
+ 	memcpy(current_pos, fences, fence_size);
+ 	current_pos += fence_size;
+ 	memcpy(current_pos, objects, object_size);
+diff --git a/drivers/hv/dxgkrnl/dxgvmbus.h b/drivers/hv/dxgkrnl/dxgvmbus.h
+index a7e625b2f..d914efdbe 100644
+--- a/drivers/hv/dxgkrnl/dxgvmbus.h
++++ b/drivers/hv/dxgkrnl/dxgvmbus.h
+@@ -722,7 +722,7 @@ struct dxgkvmb_command_waitforsyncobjectfromgpu {
+ 	/* Must be 1 when bLegacyFenceObject is TRUE */
+ 	u32				object_count;
+ 	bool				legacy_fence_object;
+-	u64				fence_values[1];
++	u64				fence_values[];
+ 	/* struct d3dkmthandle ObjectHandles[object_count] */
+ };
+ 
+-- 
+2.53.0
+

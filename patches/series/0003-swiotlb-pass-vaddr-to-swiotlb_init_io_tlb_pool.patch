@@ -1,0 +1,44 @@
+From e1b4e27627976f82d171bbb71c40955e4e53d661 Mon Sep 17 00:00:00 2001
+From: ZoeHao2026 <ZoeHao2026@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 23:05:58 +0800
+Subject: [PATCH 3/3] swiotlb: pass vaddr to swiotlb_init_io_tlb_pool()
+
+7.2.8 changed the signature of swiotlb_init_io_tlb_pool() to take the
+virtual address of the pool explicitly:
+
+  6.18:  (pool, start, nslabs, late_alloc, nareas)
+  7.2.8: (pool, start, vaddr, nslabs, late_alloc, nareas)
+
+On 6.18 the callee derived it internally with phys_to_virt(start); on
+7.2.8 every upstream caller passes it in. swiotlb_create_pool() was
+ported with the old five-argument form, which fails to build:
+
+  error: passing argument 3 of 'swiotlb_init_io_tlb_pool' makes pointer
+         from integer without a cast
+  error: too few arguments to function 'swiotlb_init_io_tlb_pool';
+         expected 6, have 5
+
+Pass phys_to_virt(base), matching the upstream call sites. The pool
+lives in the linear mapping, so this resolves to the same address the
+6.18 callee would have computed.
+---
+ kernel/dma/swiotlb.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/kernel/dma/swiotlb.c b/kernel/dma/swiotlb.c
+index 6a8abf818..8f9cc3859 100644
+--- a/kernel/dma/swiotlb.c
++++ b/kernel/dma/swiotlb.c
+@@ -1955,7 +1955,8 @@ struct io_tlb_mem *swiotlb_create_pool(phys_addr_t base, size_t size,
+ 
+ 	set_memory_decrypted((unsigned long)phys_to_virt(base),
+ 			     size >> PAGE_SHIFT);
+-	swiotlb_init_io_tlb_pool(pool, base, nslabs, false, nareas);
++	swiotlb_init_io_tlb_pool(pool, base, phys_to_virt(base), nslabs,
++				false, nareas);
+ 	mem->force_bounce = true;
+ 	mem->for_alloc = false;
+ #ifdef CONFIG_SWIOTLB_DYNAMIC
+-- 
+2.53.0
+
