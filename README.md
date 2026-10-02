@@ -165,6 +165,43 @@ u32 cmd_size = object_size + fence_size - sizeof(u64) + sizeof(...);
 校验值见仓库根目录 [`SHA256SUMS`](SHA256SUMS) 与 release 说明页。
 下载后按下方「部署到 WSL」配置即可。
 
+### 模块盘为什么是分片的（重要）
+
+release 里的 `modules-7.2.8-microsoft-standard-WSL2.vhdx` **不是单个文件**，而是
+**58 个 4 MiB 分片**（`modules-7.2.8-microsoft-standard-WSL2.vhdx.4m00` … `.4m57`），
+外加一份 `PART4M-SHA256SUMS`。
+
+原因：本条网络到 `uploads.github.com` 的 POST 会在约 **16 MiB** 处被对端重置。
+用 16 MiB 与 40 MiB 两个测试体分别上传，都在 **~16.7 MB** 处断开（`uploaded=` 与
+`time=` 两次几乎一致），所以 243 MB 的模块盘无法整文件上传。小于该阈值的附件
+（`bzImage` 18 MB、`System.map` 10 MB、`config` 230 KB）都是整文件。
+
+**用脚本重建最省事**（脚本会逐片校验 SHA-256、拼接、再校验整体 SHA-256；
+任一步失败即中止，不会留下一个看着正常实则损坏的 VHDX）：
+
+```powershell
+# Windows：用 GitHub CLI（能顺带处理私有仓库鉴权）
+.\reassemble-modules-vhdx.ps1
+
+# 没有 gh 时走公开直链
+.\reassemble-modules-vhdx.ps1 -UseDirectUrl
+```
+
+```bash
+# Linux / WSL 侧
+./reassemble-modules-vhdx.sh
+```
+
+重建后的 SHA-256 应为
+`89fe1d8d5af13c9a13b4311cc48ee63633ce55594dfcc528ad2520ce63cf0de3`，
+大小 `243269632` 字节。这个值已实测确认：把发布出去的分片重新下载拼接，
+结果与原始文件**逐字节相同**。
+
+> 如果你把这份内核部署到自己的机器上，建议直接复制现成的模块盘
+> （`/usr/lib/modules/7.2.8-microsoft-standard-WSL2` 的布局是**平铺**的，
+> 详见 [docs/PORTING-NOTES.md](docs/PORTING-NOTES.md) 的「模块 VHDX 的布局」一节），
+> 而不是重新下载分片。
+
 > 模块数由 964 变为 963，不是少了功能：`zsmalloc` 与 `crypto-zstd` 因 `ZSWAP`
 > 把它们 `select` 成内建（`=y`）而不是模块，两个 `.ko` 合进了内核镜像。
 
@@ -364,7 +401,9 @@ aa-status | head -3                      # 期望列出已加载 profile
 ├── scripts/
 │   ├── build.sh                         构建脚本（含优化项自检）
 │   ├── gen-modules-vhdx.sh              模块目录 → 模块 VHDX
-│   └── run-fs-bench.sh                  ext4 / 9P 文件系统基准
+│   ├── run-fs-bench.sh                  ext4 / 9P 文件系统基准
+│   ├── reassemble-modules-vhdx.ps1      重建分片发布的模块盘（Windows）
+│   └── reassemble-modules-vhdx.sh       重建分片发布的模块盘（Linux/WSL）
 └── docs/
     ├── FILESYSTEM-PERFORMANCE.md        跨文件系统性能实测与本次优化依据
     ├── PORTING-NOTES.md                 移植记录与踩坑
