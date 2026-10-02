@@ -474,6 +474,33 @@ aa-status | head -3                      # 期望列出已加载 profile
 配置项与 dxgkrnl 的一处引用泄漏修复，且两个挂载点功能正常（都处于 `active`）。
 所以这里记录为「WSL 与 systemd 的交互现象」，而不是内核回归。
 
+#### 同一现象的一个可复现后果：GUI 程序
+
+在**某一次**会话里，同一套「干净重启 + 立即测试」的流程中出现过：
+
+```
+/mnt/wslg/.X11-unix/X0   存在
+/tmp/.X11-unix            不存在        <-- 就是上面卸载失败的那个挂载点
+Tk 程序                  TclError: couldn't connect to display ":0"
+```
+
+把该路径补回去（`mount --bind /mnt/wslg/.X11-unix /tmp/.X11-unix`）后立刻恢复：
+
+```
+TK_OK: GUI window created and destroyed
+```
+
+随后再 `wsl --shutdown` 重启，该挂载点自行恢复，GUI 程序**无需任何手工干预**即可运行：
+
+```
+/tmp/.X11-unix: X0
+DISPLAY=:0
+TK_OK: GUI window created and destroyed
+```
+
+所以 WSLg 本身是好的，属于启动时序问题：X11 socket 挂载在少数会话里没就位。
+遇到时补挂一次即可，或者再重启一次 WSL。
+
 > 想要更强的对照实验（换回 kernel.1 再复现一次）需要临时把 `.wslconfig` 指向
 > 另一个文件名并重启才能保证真的换内核；本次没有做，因此不给「与内核无关」之外的
 > 强结论。
