@@ -1,0 +1,47 @@
+# ============================================================================
+# zram 压缩交换设备 —— 本内核已启用 ZRAM_BACKEND_ZSTD，这里把它用起来。
+#
+# 安装：
+#   sudo cp config/zram-wsl.service /etc/systemd/system/zram-wsl.service
+#   sudo install -d /etc/systemd/zram-generator.conf.d
+#   sudo cp config/zram-wsl.conf /etc/systemd/zram-generator.conf.d/wsl.conf   # 有 zram-generator 时
+#   sudo install -d /etc/sysctl.d
+#   sudo cp config/90-wsl-zram-sysctl.conf /etc/sysctl.d/90-wsl-zram-sysctl.conf
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now zram-wsl.service
+#   sudo sysctl --system
+#
+# 说明
+# ----
+# 发行版（Ubuntu 26.04）没有预装 systemd 的 zram-generator，所以这里提供的是一个
+# 自包含的 systemd 单元，只依赖内核自带的 zram 模块和 util-linux 的 zramctl
+# （本机已装 /usr/sbin/zramctl）。不引入新的软件包依赖。
+#
+# 容量取 RAM 的 10%：zram 是压缩后占用的（zstd 一般 2-3x），所以 10% 的名义容量
+# 在内存里的实际占用远低于该值。系统已有 4 GiB 的 /dev/sdc 交换分区，zram 的
+# priority 设得更高（100 > -1），因此内核优先用压缩内存交换，落盘是最后手段。
+# ============================================================================
+[Unit]
+Description=zram compressed swap (zstd)
+Documentation=man:zramctl(8)
+After=systemd-modules-load.service
+Before=swap.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# zram 是模块（本内核 CONFIG_ZRAM=m），先确保加载，否则 zramctl --find 无从分配。
+ExecStartPre=-/sbin/modprobe zram
+# 残留设备复位；没有设备时 zramctl 返回非 0，用 "-" 前缀忽略。
+ExecStartPre=-/usr/sbin/zramctl --reset /dev/zram0
+ExecStart=/usr/sbin/zramctl --find --size 1500M --algorithm zstd
+# zram 设备初始没有交换签名，必须先写签名再 swapon（否则 swapon 报
+# "read swap header failed"）。
+ExecStartPost=/sbin/mkswap /dev/zram0
+ExecStartPost=/sbin/swapon --priority 100 /dev/zram0
+ExecStop=-/sbin/swapoff /dev/zram0
+ExecStopPost=-/usr/sbin/zramctl --reset /dev/zram0
+
+[Install]
+WantedBy=swap.target

@@ -1,8 +1,18 @@
-# 构建产物校验值 (2026-09-29)
-# 内核: 7.2.8-microsoft-standard-WSL2
+# 构建产物校验值
+#
+# 内核:   7.2.8-microsoft-standard-WSL2
+# 日期:   2026-10-03
+# 主机:   18 vCPU (Intel Core Ultra 5 125H) / 15 GiB RAM / Ubuntu 26.04
+# 工具链: gcc 15.2.0 (Ubuntu 15.2.0-16ubuntu1), GNU ld 2.46, pahole 1.31
+# WSL:    2.7.10.0 / Windows 10.0.26300.9550
+#
+# 复现方式见 README 的「构建」一节；补丁系列默认落在 build/ 之外的同一源码树上。
+# 校验: sha256sum -c SHA256SUMS
 
-7272a5747c90af1f607e0c3ac7cf1e907612fdd520852bc50965279aae1a2ff0  bzImage-7.2.8-microsoft-standard-WSL2
-c6d6d27c96b91b152dfb2f9cdf3a228f5560c00069e03cef9ef825a914ec6f6f  vmlinux-7.2.8-microsoft-standard-WSL2
+723e85e730faccad8f0673437c38377bb1533d4f05a6707e3765e659156e085e  bzImage-7.2.8-microsoft-standard-WSL2
+89fe1d8d5af13c9a13b4311cc48ee63633ce55594dfcc528ad2520ce63cf0de3  modules-7.2.8-microsoft-standard-WSL2.vhdx
+83943e80d9ca023700f02de4cb4eea32ba09cd62dbd56fd3482b62caac72951f  System.map-7.2.8-microsoft-standard-WSL2
+a52bc403869d2ba9a0b4265d37d6e0bccdccf41e250083f19ad4a8921efc4c0b  config-7.2.8-microsoft-standard-WSL2
 
-# 上游源码基线
+# 上游源码基线（本仓库不含内核源码，请自行下载）
 12e8d5a973d1ad7c5a5c69882e4022b131ed715db7003fdcd760ddf8c3e51941  linux-7.2.8.tar.xz

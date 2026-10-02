@@ -10,8 +10,40 @@
 - 基线来源：`linux-7.2.8.tar.xz`
   SHA-256 `12e8d5a973d1ad7c5a5c69882e4022b131ed715db7003fdcd760ddf8c3e51941`
 - WSL 改动来源：Microsoft [`WSL2-Linux-Kernel`](https://github.com/microsoft/WSL2-Linux-Kernel)
-  分支 `linux-msft-wsl-6.18.y`，tag `linux-msft-wsl-6.18.35.2`
+  分支 `linux-msft-wsl-6.18.y`，tag **`linux-msft-wsl-6.18.40.1`**
+  （该分支 HEAD；上一版用的是 `6.18.35.2`，同步记录见
+  [docs/PORTING-NOTES.md](docs/PORTING-NOTES.md) 的「Delta 同步」一节）
 - 许可：[GPL-2.0-only](LICENSE)（含 [Linux-syscall-note](LICENSES/exceptions/Linux-syscall-note) 例外）
+
+---
+
+## 这个内核做了哪些优化
+
+除了移植 Microsoft 的 WSL2 改动，本版本还针对**文件存储与内存**做了配置层优化，
+依据是 Microsoft 官方文档
+[跨文件系统的文件存储和性能](https://learn.microsoft.com/zh-cn/windows/wsl/filesystems#file-storage-and-performance-across-file-systems)
+以及 Microsoft 自己在新版 WSL 内核里的配置取舍。
+
+实测结论（同一台机器、同一套脚本）：把项目放在 **ext4**（`/home/...`）而不是
+用 9P 挂进来的 `/mnt/c`、`/mnt/d`，单文件创建差 **约 100×**、顺序吞吐差 **12~22×**。
+
+| 路径 | 顺序写 | 顺序读 | create | unlink |
+|---|---|---|---|---|
+| ext4（`/`） | 2.8 GB/s | 6.5 GB/s | 0.02 ms/文件 | 0.76 ms/文件 |
+| 9P（`/mnt/d`） | 239 MB/s | 293 MB/s | **2.04 ms/文件** | **3.82 ms/文件** |
+
+**但这条差距不是内核能修的**：`/mnt/*` 走的是 `trans=fd` 的 9P，每请求都要在宿主侧
+往返（实测把 `msize` 从 64 KiB 调到 256 KiB 无改善），而宿主没有向 guest 暴露
+virtio-9p 设备。完整论证与实测见
+[docs/FILESYSTEM-PERFORMANCE.md](docs/FILESYSTEM-PERFORMANCE.md)。
+
+内核配置侧本次实际改动的项目：
+
+- 去掉从 Ubuntu 服务器配置继承的大机器/调试开销：`MAXSMP`、`NR_CPUS` 8192→512、
+  `SCHEDSTATS`、`LATENCYTOP`、`SCHED_STACK_END_CHECK`、`SLUB_DEBUG`、`PAGE_POISONING`、`STACKDEPOT`
+- 新增压缩内存换页：`ZSWAP`（zstd）+ `ZRAM`（zstd 后端）+ `LRU_GEN`
+- 抢占模式改用 `preempt=lazy`（**注意**：`preempt=voluntary` 在 7.2.8 的 x86 上
+  会被内核直接拒绝，原因见性能文档 §4.4）
 
 ---
 
@@ -126,11 +158,15 @@ u32 cmd_size = object_size + fence_size - sizeof(u64) + sizeof(...);
 | 附件 | 用途 |
 |---|---|
 | `bzImage-7.2.8-microsoft-standard-WSL2` | 内核镜像 → `.wslconfig` 的 `kernel=` |
-| `modules-7.2.8-microsoft-standard-WSL2.vhdx` | 模块盘（964 个模块）→ `kernelModules=` |
+| `modules-7.2.8-microsoft-standard-WSL2.vhdx` | 模块盘（963 个模块）→ `kernelModules=` |
 | `System.map-7.2.8-microsoft-standard-WSL2` | 符号表，调试用 |
 | `config-7.2.8-microsoft-standard-WSL2` | 构建所用的完整配置 |
 
-校验值见 release 说明页。下载后按下方「部署到 WSL」配置即可。
+校验值见仓库根目录 [`SHA256SUMS`](SHA256SUMS) 与 release 说明页。
+下载后按下方「部署到 WSL」配置即可。
+
+> 模块数由 964 变为 963，不是少了功能：`zsmalloc` 与 `crypto-zstd` 因 `ZSWAP`
+> 把它们 `select` 成内建（`=y`）而不是模块，两个 `.ko` 合进了内核镜像。
 
 ---
 
@@ -152,9 +188,8 @@ echo "12e8d5a973d1ad7c5a5c69882e4022b131ed715db7003fdcd760ddf8c3e51941  linux-7.
 tar xf linux-7.2.8.tar.xz
 cd linux-7.2.8
 
-# 2. 应用补丁系列（两个补丁，顺序不可颠倒）
-patch -p1 < ../patches/series/0001-port-Microsoft-WSL2-6.18-support-onto-Linux-7.2.8.patch
-patch -p1 < ../patches/series/0002-dxgkrnl-use-a-flexible-array-member-for-fence_values.patch
+# 2. 应用补丁系列（四个补丁，顺序不可颠倒）
+for p in ../patches/series/000*.patch; do patch -p1 --forward < "$p" || exit 1; done
 
 # 3. 放置配置
 cp ../config/config-7.2.8-wsl .config
@@ -174,10 +209,26 @@ make modules_install INSTALL_MOD_PATH=./modules-root INSTALL_MOD_STRIP=1
 > 也提供了一份**合并补丁** `patches/0001-wsl2-6.18-port-to-7.2.8.patch`（含全部改动），
 > 适合一次性应用；`patches/series/` 下的分层版本便于逐个审阅改动。
 
-或直接使用脚本：
+或直接使用脚本（会自动放配置、跑 `olddefconfig`、并在结尾校验本次优化项）：
 
 ```bash
 ./scripts/build.sh /path/to/linux-7.2.8
+```
+
+打包模块盘（默认 flat 布局，与当前发布件一致；布局细节见
+[docs/PORTING-NOTES.md](docs/PORTING-NOTES.md) 的「模块 VHDX 的布局」一节）：
+
+```bash
+make modules_install INSTALL_MOD_PATH=./modules-root INSTALL_MOD_STRIP=1
+./scripts/gen-modules-vhdx.sh ./modules-root 7.2.8-microsoft-standard-WSL2 \
+    ./modules-7.2.8-microsoft-standard-WSL2.vhdx
+qemu-img check ./modules-7.2.8-microsoft-standard-WSL2.vhdx
+```
+
+复测文件系统性能：
+
+```bash
+./scripts/run-fs-bench.sh /tmp/bench-$(uname -r).txt
 ```
 
 ### ⚠️ 关于 `LOCALVERSION=`
@@ -301,14 +352,21 @@ aa-status | head -3                      # 期望列出已加载 profile
 │   ├── 0001-wsl2-6.18-port-to-7.2.8.patch   合并补丁（含全部改动）
 │   └── series/
 │       ├── 0001-port-Microsoft-WSL2-6.18-support-onto-Linux-7.2.8.patch
-│       └── 0002-dxgkrnl-use-a-flexible-array-member-for-fence_values.patch
+│       ├── 0002-dxgkrnl-use-a-flexible-array-member-for-fence_values.patch
+│       ├── 0003-swiotlb-pass-vaddr-to-swiotlb_init_io_tlb_pool.patch
+│       └── 0004-wsl2-6.18.40.1-syncfile-leak-fix.patch   delta 同步修复
 ├── config/
-│   ├── config-7.2.8-wsl                 内核配置
+│   ├── config-7.2.8-wsl                 内核配置（本次优化后的权威副本）
 │   ├── wsl-securityfs.service           AppArmor securityfs 挂载
-│   └── apparmor-wsl.conf                apparmor.service drop-in
+│   ├── apparmor-wsl.conf                apparmor.service drop-in
+│   ├── zram-wsl.service                 zram(zstd) 压缩交换单元
+│   └── 90-wsl-zram-sysctl.conf          swappiness / page-cluster 微调
 ├── scripts/
-│   └── build.sh                         构建脚本
+│   ├── build.sh                         构建脚本（含优化项自检）
+│   ├── gen-modules-vhdx.sh              模块目录 → 模块 VHDX
+│   └── run-fs-bench.sh                  ext4 / 9P 文件系统基准
 └── docs/
+    ├── FILESYSTEM-PERFORMANCE.md        跨文件系统性能实测与本次优化依据
     ├── PORTING-NOTES.md                 移植记录与踩坑
     └── build.log                        完整构建日志
 ```
@@ -323,8 +381,9 @@ aa-status | head -3                      # 期望列出已加载 profile
 |---|---|
 | 配置收敛 (`olddefconfig`) | ✅ 通过 |
 | 完整构建 | ✅ 退出码 0，**0 错误 / 0 警告** |
-| 模块 | 964 个 `.ko`，vermagic 一致 |
+| 模块 | 963 个 `.ko`，vermagic 一致（`zsmalloc`/`crypto-zstd` 转为内建）|
 | 版本串 | `7.2.8-microsoft-standard-WSL2`（无多余后缀）|
+| 优化项自检 | ✅ `scripts/build.sh` 结尾逐项校验 11 个配置项，全部 `ok` |
 
 ### 真机启动验证 ✅
 
@@ -336,7 +395,7 @@ aa-status | head -3                      # 期望列出已加载 profile
 | 启动日志 | ✅ **无 panic / BUG / oops / Call Trace** |
 | systemd | ✅ `running`，**0 个失败单元** |
 | AppArmor | ✅ **178 个 profile 加载**（102 个 enforce），securityfs 已挂载 |
-| 模块子系统 | ✅ 964 个模块可用；`wireguard`/`zram`/`kvm_intel` 加载与卸载均正常 |
+| 模块子系统 | ✅ 963 个模块可用；`wireguard`/`zram`/`kvm_intel` 加载与卸载均正常 |
 | dxgkrnl | ✅ `hv_vmbus: registering driver dxgkrnl`，`/dev/dxg` 就绪 |
 | KVM 嵌套虚拟化 | ✅ `/dev/kvm` 存在，`nested = Y` |
 | 网络 | ✅ `mirrored` 模式、DNS 隧道、代理自动注入、HTTPS 出网均正常 |
@@ -344,9 +403,49 @@ aa-status | head -3                      # 期望列出已加载 profile
 | WSLg | ✅ **真实 GUI 程序（Tk 窗口）创建并正常销毁** |
 | 音频 | ✅ `pactl` 连通，`Default Sink: RDPSink` |
 | 时间同步 | ✅ 与 Windows 宿主一致（`hv_utils.timesync_implicit=1`）|
-| 内存 / swap | ✅ 15 GiB 内存 + 4 GiB swap 正常挂载 |
+| 内存 / swap | ✅ 15 GiB 内存 + 4 GiB 磁盘 swap；另加 1.5 GiB zram(zstd) swap，优先级 100 |
+| `NR_CPUS` | ✅ `setup_percpu: NR_CPUS:512`（原 8192），`CPUMASK_OFFSTACK` 已关 |
+| `Percpu:` | ✅ 12576 kB → 约 10300–10560 kB |
+| 抢占模式 | ✅ `Dynamic Preempt: lazy`，运行时 `full (lazy)`（`preempt=lazy`）|
+| zswap / MGLRU | ✅ `CONFIG_ZSWAP=y`（默认 compressor `zstd`）、`LRU_GEN_ENABLED=y` |
 
-详细测试记录见 [docs/PORTING-NOTES.md](docs/PORTING-NOTES.md)。
+详细测试记录见 [docs/PORTING-NOTES.md](docs/PORTING-NOTES.md)，
+性能实测与逐项依据见 [docs/FILESYSTEM-PERFORMANCE.md](docs/FILESYSTEM-PERFORMANCE.md)。
+
+### 建议一并启用的 zram 压缩交换
+
+本内核编入了 `ZRAM_BACKEND_ZSTD`，但压缩交换本身要由发行版配置。Ubuntu 26.04
+没有预装 `zram-generator`，因此仓库提供的是自包含的 systemd 单元（只依赖内核
+自带 zram 模块与 `zramctl`，不引入新软件包）：
+
+```bash
+sudo cp config/zram-wsl.service /etc/systemd/system/zram-wsl.service
+sudo install -d /etc/sysctl.d
+sudo cp config/90-wsl-zram-sysctl.conf /etc/sysctl.d/90-wsl-zram-sysctl.conf
+sudo systemctl daemon-reload
+sudo systemctl enable --now zram-wsl.service
+sudo sysctl --system
+zramctl; cat /proc/swaps
+```
+
+预期：`zramctl` 显示 `zstd / 1.5G / [SWAP]`，`/proc/swaps` 里 `/dev/zram0`
+优先级 **100**（高于磁盘 swap 的 -1，因此内核优先用压缩内存交换）。
+
+对应的 `%USERPROFILE%\.wslconfig` 建议（`kernelCommandLine` 为本次新增）：
+
+```ini
+[wsl2]
+kernel=C:/path/to/bzImage-7.2.8-microsoft-standard-WSL2
+kernelModules=C:/path/to/modules-7.2.8-microsoft-standard-WSL2.vhdx
+kernelCommandLine=preempt=lazy
+networkingMode=mirrored
+dnsTunneling=true
+autoProxy=true
+firewall=true
+```
+
+需要打开 zswap（默认关闭）时把该行换成
+`kernelCommandLine=preempt=lazy zswap.enabled=1 zswap.compressor=zstd`。
 
 ### 仍需注意
 

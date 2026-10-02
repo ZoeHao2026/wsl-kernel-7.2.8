@@ -479,3 +479,159 @@ $ wsl -d Ubuntu-26.04 -- uname -r
 
 > 环境记录：WSL 2.7.10.0 + `networkingMode=mirrored`。可能是该版本在 mirrored 模式下
 > 的解析差异，但无论原因如何，正斜杠是所有情况下都能工作的写法。
+
+---
+
+# Delta 同步：6.18.35.2 → 6.18.40.1（wsl-kernel.2）
+
+本节记录第二次更新：沿用同一个上游基线 `linux-7.2.8`（当时 kernel.org 最新的
+stable 就是它，7.3 还在 `-rc5`），但把 Microsoft 侧的移植来源从
+`linux-msft-wsl-6.18.35.2` 前移到 **`linux-msft-wsl-6.18.40.1`**。
+
+## 为什么只换 Microsoft delta，不动上游版本
+
+`https://www.kernel.org/releases.json` 当时给出的状态是：
+
+```
+latest_stable: 7.2.8        (2026-09-25)
+mainline:      7.3-rc5
+longterm:      6.18.54 / 6.12.111 / 6.6.157 / 6.1.188 / 5.15.221 / 5.10.270
+```
+
+也就是说**没有更新的 stable 可升**。而 Microsoft 的滚动 LTS 分支
+`linux-msft-wsl-6.18.y` 已经前移到 `6.18.40.1`（40.1 那个 commit 正是该分支
+HEAD），所以能升的是 delta 本身。
+
+## 怎么确定 delta 到底改了哪些文件
+
+`linux-msft-wsl-6.18.35.2..linux-msft-wsl-6.18.40.1` 的**全量** diff 是 2318 个文件，
+但绝大部分是 `Linux 6.18.36…6.18.40` 的 stable 内容——对我们的 7.2.8 树毫无意义。
+
+有效做法是先确认 **tag 点本身**：
+
+```text
+merge-base(6.18.35.2, 6.18.40.1) = 1bd4ed3d = 6.18.35.2 tag 指向的 commit
+```
+
+也就是说 6.18.35.2 是 6.18.40.1 的祖先，两者之间**没有分叉**，
+上游 stable 的增量全部夹在 `Microsoft/` 自有改动之间。于是：
+
+- 从 `MSFT-Merge/log` 与该区间内带 WSL 前缀的 commit 取 Microsoft 自有改动
+  （`WSL: Bundle headers and perf in the modules VHDX`、`x86 config optimizations`、
+  `Enable CONFIG_MEMCG_V1`、`WSL: Update custom kernel packaging documentation` …）
+- 排除 `1bd4ed3d..` 区间里的纯上游 commit
+
+结论：**on-tree 的代码改动只有 3 个驱动文件**。
+
+| 文件 | 6.18.40.1 的改动 | 本仓库怎么处理 |
+|---|---|---|
+| `drivers/hv/dxgkrnl/dxgsyncfile.c` | `cleanup:` 路径修 syncobj 引用泄漏 | 采纳 → `0004` |
+| `drivers/hv/dxgkrnl/dxgvmbus.h` | `u64 fence_values[1]` → `fence_values[]` | **无需处理**，`0002` 已经做了同一件事 |
+| `drivers/hv/dxgkrnl/dxgvmbus.c` | `cmd_size` 去掉多余的 `- sizeof(u64)` | **无需处理**，`0002` 已经做了同一件事 |
+| `include/linux/hyperv.h` | VMBus 版本/通道标志宏重构 + `VERSION_WIN10_V6_0` + paravisor 标志 | **无需处理**：这些是上游改动，Linux 7.2.8 里**已经有**，且比 6.18.40.1 更新 |
+
+最后一条值得单独强调：我们**不**把 `include/linux/hyperv.h` 退回 6.18.40.1 的版本。
+把 6.18.40.1 的该文件与 7.2.8 的原生版本做过逐项对比——7.2.8 是所有
+`VERSION_*` / `VMBUS_CHANNEL_*` 宏的超集，回退等于降级。
+
+## 为什么 `0004` 只有一个 hunk
+
+第一次尝试把 35.2→40.1 的整块 delta 直接打上去，结果是 **1 个 hunk 失败、
+2 个 hunk 被判定 already applied**。原因是那份 delta 是相对 **35.2 原始文件**生成的，
+而本地树的起点是「35.2 + 已经应用过的 0002」。
+
+正确做法是把补丁相对**它真正要落的那个状态**生成，也就是
+「0001 + 0002 + 0003 之后的树」：
+
+```bash
+# 建参考树
+tar xf linux-7.2.8.tar.xz && cd linux-7.2.8
+patch -p1 < .../0001-port-Microsoft-WSL2-6.18-support-onto-Linux-7.2.8.patch
+patch -p1 < .../0002-dxgkrnl-use-a-flexible-array-member-for-fence_values.patch
+patch -p1 < .../0003-swiotlb-pass-vaddr-to-swiotlb_init_io_tlb_pool.patch
+# 与最终树 diff，只有 dxgsyncfile.c 真正不同
+diff -u 参考树/drivers/hv/dxgkrnl/dxgsyncfile.c 最终树/... 
+```
+
+这样 `0004` 就退化成一个 6 行 hunk，语义干净，也不会和 `0002` 抢同一段代码。
+
+## 端口一致性验证
+
+打完 4 个补丁后，与 Microsoft 40.1 的同名文件逐字节比对：
+
+```text
+drivers/hv/dxgkrnl/dxgsyncfile.c   IDENTICAL to 6.18.40.1
+drivers/hv/dxgkrnl/dxgvmbus.h      IDENTICAL to 6.18.40.1
+drivers/hv/dxgkrnl/dxgvmbus.c      DIFFERS by one spelling:
+    - current_pos = (u8 *) command->fence_values;    (Microsoft)
+    + current_pos = (u8 *)&command[1];               (本仓库, 来自 0002)
+```
+
+这两行指向同一地址（同一个柔性数组头之后）。保留本仓库的写法：
+`&command[1]` 不依赖柔性成员的 offset，意图更明确，也是 `0002` 原本就写明要这么做的。
+
+## 模块 VHDX 的布局：本次最值得记下来的坑
+
+Microsoft 在 40.1 里把 `Microsoft/scripts/gen_modules_vhdx.sh` 换成了
+`gen_artifacts_vhdx.sh`，模块盘布局从
+
+```text
+<kernelrelease>/{modules.dep, kernel/, ...}          # 平铺
+```
+
+改成
+
+```text
+<kernelrelease>/{modules, linux-headers, perf}       # 嵌套
+```
+
+新布局还顺带把 UAPI 头和 perf 一起塞进模块盘，并加了「拒绝覆盖已存在文件」的保护。
+
+**照抄新布局会导致内核起不来模块。** 判断依据不是文档而是实测：
+把两个 VHDX 都转成 raw 后用 `debugfs` 看根目录——
+
+```bash
+qemu-img convert -O raw modules-...vhdx /tmp/x.img
+debugfs -R "ls -l /" /tmp/x.img
+```
+
+- 本机**正在运行**的 kernel.1 模块盘：根目录直接就是 `kernel/`、`modules.dep` …（平铺）
+- 按新脚本生成的盘：根目录下只有 `7.2.8-microsoft-standard-WSL2/`，模块在它里面
+
+因此 [`scripts/gen-modules-vhdx.sh`](../scripts/gen-modules-vhdx.sh) 默认产出
+**平铺**布局（`flat`），并保留 `nested` 作为可选参数。同时必须补掉新脚本做的两件事：
+
+1. 删掉 `build` / `source` 两个指向构建机源码树的悬空软链接；
+2. `mke2fs -b 1024` + 按实际文件数预留 inode（小文件多，默认 4 KiB 块和默认
+   inode 数都会出问题）。
+
+## 配置差异：这次真正的优化落点
+
+Microsoft 在 40.1 里重写了 `arch/x86/configs/config-wsl`（`Microsoft/config-wsl`
+是指向它的符号链接；该文件从 8757 行缩到 7402 行）。把它与仓库沿用的
+6.18.35.2 配置逐项对比后，本次采纳的收敛项与理由见
+[`docs/FILESYSTEM-PERFORMANCE.md`](FILESYSTEM-PERFORMANCE.md) §4。
+
+其中一条属于「不看新配置就绝对想不到」的连带关系，单独记在这里：
+
+```text
+CONFIG_LATENCYTOP=y  --select-->  CONFIG_KALLSYMS_ALL=y
+                     --select-->  CONFIG_SCHEDSTATS=y
+```
+
+所以单发 `--disable SCHEDSTATS` 是**无效的**：`make olddefconfig` 会立刻把它重新
+select 回来（本次实测确认过，改完仍是 `CONFIG_SCHEDSTATS=y`）。
+必须先把 `LATENCYTOP` 关掉，`SCHEDSTATS` 才真的能关。
+
+## 部署窗口
+
+更换内核镜像需要 `wsl --shutdown`。为把风险压到最小，本次分两步：
+
+1. **只换 `bzImage`，保留 kernel.1 的模块盘**，重启验证能起来 →
+   这一步就把「镜像是否可用」和「模块盘是否可用」两个变量分开了；
+2. 起来之后再换模块盘，重启确认 963 个模块可用。
+
+另外记录一个操作上的教训：`artifacts-kernel.1/` 里的旧产物是**先备份再替换**的，
+中途有一次 `Remove-Item` 删掉了在用的 `bzImage` 而新文件还没就位——
+因为提前做了备份，才没有造成不可启动的状态。**换内核镜像时，先确认备份存在、
+再删旧文件**，顺序不要反。

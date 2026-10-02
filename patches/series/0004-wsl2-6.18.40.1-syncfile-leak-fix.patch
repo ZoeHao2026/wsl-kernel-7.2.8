@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ZoeHao2026 <ZoeHao2026@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 04:55:00 +0800
+Subject: [PATCH 4/4] dxgkrnl: fix syncobj reference leak in open_syncobj_from_syncfile
+
+Sync the ported dxgkrnl delta up to Microsoft tagging point
+linux-msft-wsl-6.18.40.1 (previously 6.18.35.2) and take the one
+behavioural fix it carries for this code path.
+
+dxgkio_open_syncobj_from_syncfile() only released its reference on the
+error path. On success the dxgsyncobject created for the caller stayed
+referenced forever, so every successful
+D3DKMT_OPENSYNCOBJECTFROMSYNCFILE ioctl leaked one object plus its
+shared syncpoint reference.
+
+Restore the intended lifetime handling: on failure destroy the local
+object and tell the host to drop the remote one; on success put the
+reference that the ioctl took.
+
+Scope note - the rest of the 6.18.35.2 -> 6.18.40.1 delta needs no
+change on this tree:
+
+ - drivers/hv/dxgkrnl/dxgvmbus.h and dxgvmbus.c are already equivalent:
+   0002 already converts the trailer to a flexible array member and
+   fixes the corresponding cmd_size arithmetic, and Microsoft's
+   current_pos spelling addresses the same bytes as &command[1].
+ - include/linux/hyperv.h needs nothing: the VMBus version/channel-flag
+   refactor and the paravisor flags 40.1 carries were pushed upstream
+   and are already present in Linux 7.2.8.
+
+The three driver files are byte-identical to their 40.1 counterparts
+after this patch, except for the current_pos spelling above.
+---
+ drivers/hv/dxgkrnl/dxgsyncfile.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/hv/dxgkrnl/dxgsyncfile.c b/drivers/hv/dxgkrnl/dxgsyncfile.c
+--- a/drivers/hv/dxgkrnl/dxgsyncfile.c
++++ b/drivers/hv/dxgkrnl/dxgsyncfile.c
+@@ -297,9 +297,14 @@
+ cleanup:
+ 	if (dmafence)
+ 		dma_fence_put(dmafence);
+-	if (ret) {
+-		if (syncobj) 
++	if (syncobj) {
++		if (ret) {
+ 			dxgsyncobject_destroy(process, syncobj);
++			if (openargs.sync_object.v)
++				dxgvmb_send_destroy_sync_object(process, openargs.sync_object);
++		} else {
++			kref_put(&syncobj->syncobj_kref, dxgsyncobject_release);
++		}
+ 	}
+ 	if (adapter)
+ 		dxgadapter_release_lock_shared(adapter);
+diff --git a/drivers/hv/dxgkrnl/dxgvmbus.c b/drivers/hv/dxgkrnl/dxgvmbus.c
+diff --git a/drivers/hv/dxgkrnl/dxgvmbus.h b/drivers/hv/dxgkrnl/dxgvmbus.h
