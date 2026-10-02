@@ -432,7 +432,7 @@ aa-status | head -3                      # 期望列出已加载 profile
 |---|---|
 | 内核启动 | ✅ `7.2.8-microsoft-standard-WSL2` |
 | 启动日志 | ✅ **无 panic / BUG / oops / Call Trace** |
-| systemd | ✅ `running`，**0 个失败单元** |
+| systemd | ✅ **0 个失败单元**；`is-system-running` 首次启动为 `running`，经过一次 `wsl --shutdown` 后会变成 `degraded`（失败单元仍为 0）—— 见下方「关于 degraded」|
 | AppArmor | ✅ **178 个 profile 加载**（102 个 enforce），securityfs 已挂载 |
 | 模块子系统 | ✅ 963 个模块可用；`wireguard`/`zram`/`kvm_intel` 加载与卸载均正常 |
 | dxgkrnl | ✅ `hv_vmbus: registering driver dxgkrnl`，`/dev/dxg` 就绪 |
@@ -450,6 +450,33 @@ aa-status | head -3                      # 期望列出已加载 profile
 
 详细测试记录见 [docs/PORTING-NOTES.md](docs/PORTING-NOTES.md)，
 性能实测与逐项依据见 [docs/FILESYSTEM-PERFORMANCE.md](docs/FILESYSTEM-PERFORMANCE.md)。
+
+### 关于 `degraded`（实测现象）
+
+干净重启后 `systemctl is-system-running` 报 `degraded`，但：
+
+- `systemctl --failed` 与 `list-units --state=failed` → **0 个单元**
+- `systemctl show -p SystemState --value` → `degraded`（管理器级状态，不是某单元挂了）
+- 两个会被点名的单元 `init.mount`（`/init`）与 `tmp-.X11\x2dunix.mount`
+  （`/tmp/.X11-unix`）当前都是 `active (mounted)`
+- 关机日志里的线索：
+
+  ```
+  Failed unmounting init.mount - /init.
+  Failed unmounting tmp-.X11\x2dunix.mount - /tmp/.X11-unix.
+  ```
+
+这两个挂载点是 **WSL 自己**建立并持有的（`/init` 是 WSL 的 init 挂载，
+`/tmp/.X11-unix` 供 WSLg 使用）。systemd 在关机时尝试卸载它们会失败，并把该失败
+状态带进下一次启动。
+
+本次内核改动**没有**触碰挂载、VFS、文件系统或 systemd 交互相关代码：改动只有内核
+配置项与 dxgkrnl 的一处引用泄漏修复，且两个挂载点功能正常（都处于 `active`）。
+所以这里记录为「WSL 与 systemd 的交互现象」，而不是内核回归。
+
+> 想要更强的对照实验（换回 kernel.1 再复现一次）需要临时把 `.wslconfig` 指向
+> 另一个文件名并重启才能保证真的换内核；本次没有做，因此不给「与内核无关」之外的
+> 强结论。
 
 ### 建议一并启用的 zram 压缩交换
 
