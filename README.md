@@ -283,10 +283,34 @@ qemu-img check ./modules-7.2.8-microsoft-standard-WSL2.vhdx
 
 ## 一键部署
 
-从 release 下载内核、校验、写 `.wslconfig`、再装环境修复，一条命令：
+### 真·一条命令（不用先克隆仓库）
 
 ```powershell
-# Windows（PowerShell）。脚本在仓库 deploy\ 下，也可从下载的源码里运行
+# Windows：下载部署包、解包、装内核 + 环境，全程一条命令
+irm https://raw.githubusercontent.com/ZoeHao2026/wsl-kernel-7.2.8/main/deploy/bootstrap.ps1 | iex
+
+# 想把参数转给 install.ps1（例如只装环境、或只看计划）
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ZoeHao2026/wsl-kernel-7.2.8/main/deploy/bootstrap.ps1))) -SkipKernel -DryRun
+```
+
+```bash
+# WSL 侧：只装环境修复
+curl -fsSL https://raw.githubusercontent.com/ZoeHao2026/wsl-kernel-7.2.8/main/deploy/bootstrap.sh \
+  | sudo bash
+
+# 追加参数会原样转发给 install.sh
+curl -fsSL https://raw.githubusercontent.com/ZoeHao2026/wsl-kernel-7.2.8/main/deploy/bootstrap.sh \
+  | sudo bash -s -- --status
+```
+
+引导脚本做的事：下载 `wsl-kernel-deploy.zip` / `.tar.gz` → **校验压缩包魔数**
+（防止把代理或门户的错误页当成包）→ 解包到临时目录 → 运行对应的安装器 →
+清理临时目录。失败会明确报错，不会继续往下走。
+
+### 已经克隆了仓库的话
+
+```powershell
+# Windows（PowerShell）
 .\deploy\install.ps1
 
 # 用本地已构建/已下载的产物，不走网络
@@ -457,7 +481,9 @@ aa-status | head -3                      # 期望列出已加载 profile
 │   ├── zram-wsl.service                 zram(zstd) 压缩交换单元
 │   └── 90-wsl-zram-sysctl.conf          swappiness / page-cluster 微调
 ├── deploy/                              一键部署
-│   ├── install.ps1                      Windows 侧入口（内核 + 环境）
+│   ├── bootstrap.ps1                    Windows 引导脚本（一条命令入口）
+│   ├── bootstrap.sh                     WSL 引导脚本（一条命令入口）
+│   ├── install.ps1                      Windows 侧安装器（内核 + 环境）
 │   └── wsl-env/
 │       ├── install.sh                   WSL 侧安装器（幂等/可卸载/--dry-run）
 │       └── assets/                      被安装的文件（profile.d / unit / wsl-gpu ...）
