@@ -451,6 +451,10 @@ aa-status | head -3                      # 期望列出已加载 profile
 详细测试记录见 [docs/PORTING-NOTES.md](docs/PORTING-NOTES.md)，
 性能实测与逐项依据见 [docs/FILESYSTEM-PERFORMANCE.md](docs/FILESYSTEM-PERFORMANCE.md)。
 
+部署层另外修好的三件事 —— `/tmp/.X11-unix` 启动竞态（约一半冷启动会让 GUI 失败）、
+GPU 硬件加速的正确结论与按需开关、内存上限 —— 见同一文档的
+[§6 部署层修复](docs/FILESYSTEM-PERFORMANCE.md#6-部署层修复三件与内核无关但确实影响可用性的事)。
+
 ### 关于 `degraded`（实测现象）
 
 干净重启后 `systemctl is-system-running` 报 `degraded`，但：
