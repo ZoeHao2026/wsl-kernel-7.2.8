@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# ============================================================================
+# wsl-gpu —— 在 WSLg 里启用/停用 Intel Arc 硬件加速（Mesa 的 d3d12 后端）
+#
+# 用法:
+#   wsl-gpu status     查看当前渲染器与可用后端
+#   wsl-gpu on         为之后的登录会话启用硬件加速
+#   wsl-gpu off        恢复默认（软件渲染 llvmpipe）
+#   wsl-gpu test       立刻用硬件加速跑一次 OpenGL 探测（不改变默认）
+#
+# 为什么默认不启用
+# ----------------
+# 实测（本机 Intel Core Ultra 5 125H / Arc 核显 / WSL 2.7.10）：
+#
+#   glxgears 小窗口（同步、往返密集）   llvmpipe 1060 FPS   d3d12 199 FPS
+#   glxgears 1600x1000（填充率）        llvmpipe  316 FPS   d3d12 118 FPS
+#   Tk 顶点密集型画布 1280x720          llvmpipe  137 fps   d3d12 136 fps
+#
+# 也就是说：**普通 GUI 负载不会更快，反而可能更慢**。原因是每次 GL 调用都要从
+# guest 经共享内存通道打到 Windows 侧的 GPU，往返延迟盖过了硬件带来的收益；
+# 而这些负载本来就被 X11 传输和 CPU 支配，不卡在渲染上。
+#
+# 硬件加速的真正价值是「软件渲染跑不动」的场景：
+#   - 需要 OpenGL 4.6 或 Vulkan 的应用（llvmpipe 只提供 4.5 且无 Vulkan）
+#   - Blender / 3D 建模 / 视频转码 / 任何真正吃 GPU 的负载
+#   - OpenCL / 计算类负载
+#
+# 所以做成用具名开关，而不是默认打开。
+#
+# 机制
+# ----
+# 走的是 Mesa 的 d3d12 后端 → WSL 的 libdxcore.so → Windows GPU。
+# **不经过 /dev/dri，也不经过 dxgkrnl 的适配器查询**，所以本机不存在
+# /dev/dri、以及 dmesg 里 dxgkio_query_adapter_info: Ioctl failed: -22
+# 都不影响这条路径。
+# ============================================================================
+set -euo pipefail
+
+PROFILE=/etc/profile.d/50-wsl-gpu.sh
+DRI_DIR=/usr/lib/x86_64-linux-gnu/dri
+STATE=enabled
+
+if [ "$(id -u)" != 0 ]; then
+	exec sudo -n "$0" "$@"
+fi
+
+usage() {
+	sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+	exit 1
+}
+
+has_d3d12() { [ -f "$DRI_DIR/d3d12_dri.so" ]; }
+
+status() {
+	echo "=== 渲染器（DISPLAY=:0）==="
+	if command -v glxinfo >/dev/null 2>&1; then
+		local r a raw
+		r="$(DISPLAY=:0 glxinfo -B 2>/dev/null | grep 'OpenGL renderer' | cut -d: -f2- | xargs || true)"
+		a="$(DISPLAY=:0 glxinfo -B 2>/dev/null | grep 'Accelerated' | cut -d: -f2- | xargs || true)"
+		printf '  当前:      %s\n' "${r:-（取不到，检查 DISPLAY 与 /tmp/.X11-unix）}"
+		printf '  加速:      %s\n' "${a:-未知}"
+		printf '  硬件探测:  '
+		raw="$(MESA_LOADER_DRIVER_OVERRIDE=d3d12 GALLIUM_DRIVER=d3d12 \
+			DISPLAY=:0 glxinfo -B 2>/dev/null | grep 'OpenGL renderer' | cut -d: -f2- | xargs || true)"
+		case "$raw" in
+			*D3D12*) echo "d3d12 可用（$raw）" ;;
+			"")      echo "取不到（显示不可用？）" ;;
+			*)       echo "d3d12 不可用（得到 $raw）" ;;
+		esac
+	else
+		echo "  glxinfo 未安装，无法探测（apt install mesa-utils）"
+	fi
+	echo "=== 默认开关 ==="
+	if [ -f "$PROFILE" ]; then echo "  已启用（$PROFILE 存在）"; else echo "  未启用（软件渲染 llvmpipe）"; fi
+	echo "=== 相关事实 ==="
+	echo "  /dev/dri:      $([ -d /dev/dri ] && echo 存在 || echo '不存在（d3d12 路径不需要它）')"
+	echo "  d3d12 驱动:    $([ -f "$DRI_DIR/d3d12_dri.so" ] && echo 存在 || echo 缺失)"
+	echo "  libdxcore.so:  $([ -f /usr/lib/wsl/lib/libdxcore.so ] && echo 存在 || echo 缺失)"
+}
+
+enable() {
+	has_d3d12 || { echo "找不到 $DRI_DIR/d3d12_dri.so，无法启用" >&2; exit 1; }
+	cat > "$PROFILE" <<'EOF'
+# 由 wsl-gpu 写入：为登录会话启用 Intel Arc 硬件加速（Mesa d3d12 后端）
+# 停用：wsl-gpu off
+export MESA_LOADER_DRIVER_OVERRIDE=d3d12
+export GALLIUM_DRIVER=d3d12
+EOF
+	chmod 644 "$PROFILE"
+	echo "已启用。新开的登录会话（或 source $PROFILE）生效。"
+	status
+}
+
+disable() {
+	rm -f "$PROFILE"
+	echo "已停用，恢复默认软件渲染（llvmpipe）。"
+}
+
+probe() {
+	echo "=== 立刻用 d3d12 探测（不改变默认）==="
+	MESA_LOADER_DRIVER_OVERRIDE=d3d12 GALLIUM_DRIVER=d3d12 \
+		DISPLAY=:0 glxinfo -B 2>&1 | grep -iE 'OpenGL renderer|Accelerated|OpenGL version'
+}
+
+case "${1:-status}" in
+	status) status ;;
+	on) enable ;;
+	off) disable ;;
+	test) probe ;;
+	*) usage ;;
+esac

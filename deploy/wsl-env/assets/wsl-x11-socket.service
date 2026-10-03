@@ -1,0 +1,24 @@
+[Unit]
+Description=Ensure /tmp/.X11-unix points at the WSLg X11 socket
+Documentation=man:systemd.unit(5)
+# 关键：必须在 /tmp 的 tmpfs 就位之后才动手。
+# WSL 生成的 wslg.service 只声明了 After=tmp.mount，实测仍会抢在 tmp.mount
+# 完成之前执行（本机 4 次冷启动坏 2 次）。RequiresMountsFor 会真正等到
+# /tmp 所在的文件系统可用。
+RequiresMountsFor=/tmp
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/ensure-wsl-x11-socket.sh
+# 只报告，不因修复失败而让启动变 failed
+ExecStartPost=-/bin/sh -c '[ -S /tmp/.X11-unix/X0 ] && echo "X11 socket 就绪" || echo "警告: /tmp/.X11-unix/X0 仍不可用"'
+
+[Install]
+# 不要用 graphical.target：本机的 graphical.target 是被 WSLg 的
+# wslg-session.service 拉起来的用户会话目标，在 systemd --system 里
+# 常常已经处于 active 状态，于是 WantedBy=graphical.target 永远不会触发，
+# 实测表现为服务明明 enabled 却始终 inactive。
+# 换成基础启动目标才会在每次冷启动被拉起。
+WantedBy=multi-user.target
+

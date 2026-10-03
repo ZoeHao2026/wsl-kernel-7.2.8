@@ -281,6 +281,64 @@ qemu-img check ./modules-7.2.8-microsoft-standard-WSL2.vhdx
 
 ---
 
+## 一键部署
+
+从 release 下载内核、校验、写 `.wslconfig`、再装环境修复，一条命令：
+
+```powershell
+# Windows（PowerShell）。脚本在仓库 deploy\ 下，也可从下载的源码里运行
+.\deploy\install.ps1
+
+# 用本地已构建/已下载的产物，不走网络
+.\deploy\install.ps1 -KernelDir C:\path\to\artifacts
+
+# 只装环境修复（X11 socket 兜底 / zram / GPU 开关），内核不动
+.\deploy\install.ps1 -SkipKernel
+
+# 只看计划，不改任何东西
+.\deploy\install.ps1 -DryRun
+```
+
+WSL 侧也可以单独跑（需要 `sudo`）：
+
+```bash
+sudo ./deploy/wsl-env/install.sh              # 安装/更新
+sudo ./deploy/wsl-env/install.sh --status     # 查看状态
+sudo ./deploy/wsl-env/install.sh --dry-run    # 只打印计划
+sudo ./deploy/wsl-env/install.sh --uninstall  # 卸载它自己装的东西
+```
+
+脚本的行为约定：
+
+- **幂等** —— 只覆盖内容不同的文件，重复运行安全
+- **会备份** —— 改 `.wslconfig` 前先写到 `.wslconfig.bak-<时间戳>`，且只改它负责的三个键
+  （`kernel` / `kernelModules` / `memory`），`networkingMode` 等原样保留
+- **会校验** —— 内核产物逐个比对 `SHA256SUMS`，任何一个不匹配就中止，不部署损坏的内核
+- **可卸载** —— `--uninstall` 只删它自己装的文件
+
+装完必须重启 WSL，并且**核对 `uname -v`**（构建时间），不能只看 `uname -r`：
+
+```powershell
+wsl --shutdown
+wsl -d Ubuntu-26.04 -- uname -r    # 期望 7.2.8-microsoft-standard-WSL2
+wsl -d Ubuntu-26.04 -- uname -v    # 期望构建时间与部署前不同
+```
+
+> 为什么要看 `uname -v`：WSL 会复用内存里已有的虚拟机实例，只替换 `bzImage`
+> 而不真正重启时，`uname -r` 可能显示旧内核的新版本号，看起来"成功"其实没换。
+
+一键部署装的三项环境修复（都不改内核）：
+
+| 项目 | 作用 | 实测 |
+|---|---|---|
+| `/tmp/.X11-unix` 兜底 | 该路径在约一半冷启动会丢失，导致 GUI 全部失败 | 登录兜底 **11/11** 冷启动可用 |
+| zram(zstd) 压缩交换 | 1.5 GiB 压缩交换，优先级 100 | 压缩比约 2.6× |
+| `wsl-gpu` 开关 | Intel Arc 硬件加速，默认**关**（普通 GUI 反而更慢） | `wsl-gpu status` 可查 |
+
+逐项依据与排查过程见 [docs/FILESYSTEM-PERFORMANCE.md §6](docs/FILESYSTEM-PERFORMANCE.md#6-部署层修复三件与内核无关但确实影响可用性的事)。
+
+---
+
 ## 部署到 WSL
 
 1. 把 `arch/x86/boot/bzImage` 放到一个 Windows 可访问路径
@@ -398,6 +456,12 @@ aa-status | head -3                      # 期望列出已加载 profile
 │   ├── apparmor-wsl.conf                apparmor.service drop-in
 │   ├── zram-wsl.service                 zram(zstd) 压缩交换单元
 │   └── 90-wsl-zram-sysctl.conf          swappiness / page-cluster 微调
+├── deploy/                              一键部署
+│   ├── install.ps1                      Windows 侧入口（内核 + 环境）
+│   └── wsl-env/
+│       ├── install.sh                   WSL 侧安装器（幂等/可卸载/--dry-run）
+│       └── assets/                      被安装的文件（profile.d / unit / wsl-gpu ...）
+├── .gitattributes                       锁定脚本行尾（shell 必须 LF）
 ├── scripts/
 │   ├── build.sh                         构建脚本（含优化项自检）
 │   ├── gen-modules-vhdx.sh              模块目录 → 模块 VHDX
