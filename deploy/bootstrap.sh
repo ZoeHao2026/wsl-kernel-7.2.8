@@ -17,12 +17,17 @@
 set -euo pipefail
 
 REPO="${REPO:-ZoeHao2026/wsl-kernel-7.2.8}"
-TAG="${TAG:-v7.2.8-wsl-kernel.2}"
+# TAG 留空 = 跟随最新 release；显式设置则固定到该版本（可复现）
+TAG="${TAG:-}"
 
 if [ -n "${DSH_BOOTSTRAP_URL:-}" ]; then
 	URL="$DSH_BOOTSTRAP_URL"
-else
+elif [ -n "${TAG:-}" ]; then
+	# 显式指定就固定到某个版本（可复现）
 	URL="https://github.com/$REPO/releases/download/$TAG/wsl-kernel-deploy.tar.gz"
+else
+	# 默认跟随最新 release，这样一行命令不会随版本推进而失效
+	URL="https://github.com/$REPO/releases/latest/download/wsl-kernel-deploy.tar.gz"
 fi
 
 if [ -n "${DSH_BOOTSTRAP_DIR:-}" ]; then

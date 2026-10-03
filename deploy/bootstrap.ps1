@@ -46,7 +46,12 @@ $ErrorActionPreference = 'Stop'
 
 if (-not $BundleUrl) {
     if ($env:DSH_BOOTSTRAP_URL) { $BundleUrl = $env:DSH_BOOTSTRAP_URL }
-    else { $BundleUrl = "https://github.com/$Repo/releases/download/$Tag/wsl-kernel-deploy.zip" }
+    else {
+        # "latest" floats to the newest release, so this one-liner never goes
+        # stale. Pass -Tag to pin an exact build instead.
+        if ($Tag) { $BundleUrl = "https://github.com/$Repo/releases/download/$Tag/wsl-kernel-deploy.zip" }
+        else      { $BundleUrl = "https://github.com/$Repo/releases/latest/download/wsl-kernel-deploy.zip" }
+    }
 }
 if (-not $WorkDir) {
     if ($env:DSH_BOOTSTRAP_DIR) { $WorkDir = $env:DSH_BOOTSTRAP_DIR }
