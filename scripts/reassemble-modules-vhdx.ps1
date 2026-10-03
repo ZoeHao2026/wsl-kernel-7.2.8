@@ -37,7 +37,8 @@
 param(
     [string]$OutFile = (Join-Path (Get-Location) 'modules-7.2.8-microsoft-standard-WSL2.vhdx'),
     [string]$Repo = 'ZoeHao2026/wsl-kernel-7.2.8',
-    [string]$Tag = 'v7.2.8-wsl-kernel.2',
+    # Empty = follow the newest release; pin an exact build with -Tag.
+    [string]$Tag = '',
     [int]$PartCount = 58,
     [string]$ExpectedVhdxSha256 = '89fe1d8d5af13c9a13b4311cc48ee63633ce55594dfcc528ad2520ce63cf0de3',
     [switch]$UseDirectUrl,
@@ -45,6 +46,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Resolve the release reference the same way install.ps1 does, so the modules
+# disk can be rebuilt from "latest" without hand-editing a tag.
+if ($Tag) {
+    $RelBase = "https://github.com/$Repo/releases/download/$Tag"
+} else {
+    $RelBase = "https://github.com/$Repo/releases/latest/download"
+}
 $prefix = 'modules-7.2.8-microsoft-standard-WSL2.vhdx.4m'
 
 # Refuse to clobber silently: the user may have a modules disk in use.
@@ -59,7 +68,7 @@ Write-Host "Parts directory: $work"
 
 try {
     # ------------------------------------------------------------- checksums
-    $sumsUrl = "https://github.com/$Repo/releases/download/$Tag/PART4M-SHA256SUMS"
+    $sumsUrl = "$RelBase/PART4M-SHA256SUMS"
     $sumsFile = Join-Path $work 'PART4M-SHA256SUMS'
     Write-Host 'Downloading part checksums ...'
     Invoke-WebRequest -Uri $sumsUrl -OutFile $sumsFile -UseBasicParsing
@@ -82,10 +91,14 @@ try {
         for ($attempt = 1; $attempt -le 4 -and -not $ok; $attempt++) {
             try {
                 if ($UseDirectUrl -or -not $haveGh) {
-                    $url = "https://github.com/$Repo/releases/download/$Tag/$name"
+                    $url = "$RelBase/$name"
                     Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
                 } else {
-                    & gh release download $Tag --repo $Repo --pattern $name --dir $work --clobber 2>&1 | Out-Null
+                    if ($Tag) {
+                        & gh release download $Tag --repo $Repo --pattern $name --dir $work --clobber 2>&1 | Out-Null
+                    } else {
+                        & gh release download --repo $Repo --pattern $name --dir $work --clobber 2>&1 | Out-Null
+                    }
                     if ($LASTEXITCODE -ne 0) { throw "gh release download failed with exit code $LASTEXITCODE" }
                 }
                 $ok = $true

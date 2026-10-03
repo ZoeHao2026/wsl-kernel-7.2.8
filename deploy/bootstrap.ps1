@@ -32,7 +32,10 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Tag = 'v7.2.8-wsl-kernel.2',
+    # Empty = follow the newest release. Windows PowerShell 5.1 does not accept
+    # "latest" as a default here, so the empty string is the "unset" marker and
+    # is resolved below. Pin an exact build with -Tag v7.2.8-wsl-kernel.3.
+    [string]$Tag = '',
     [string]$Repo = 'ZoeHao2026/wsl-kernel-7.2.8',
     [string]$BundleUrl,
     [string]$WorkDir,
@@ -46,12 +49,8 @@ $ErrorActionPreference = 'Stop'
 
 if (-not $BundleUrl) {
     if ($env:DSH_BOOTSTRAP_URL) { $BundleUrl = $env:DSH_BOOTSTRAP_URL }
-    else {
-        # "latest" floats to the newest release, so this one-liner never goes
-        # stale. Pass -Tag to pin an exact build instead.
-        if ($Tag) { $BundleUrl = "https://github.com/$Repo/releases/download/$Tag/wsl-kernel-deploy.zip" }
-        else      { $BundleUrl = "https://github.com/$Repo/releases/latest/download/wsl-kernel-deploy.zip" }
-    }
+    elseif ($Tag) { $BundleUrl = "https://github.com/$Repo/releases/download/$Tag/wsl-kernel-deploy.zip" }
+    else          { $BundleUrl = "https://github.com/$Repo/releases/latest/download/wsl-kernel-deploy.zip" }
 }
 if (-not $WorkDir) {
     if ($env:DSH_BOOTSTRAP_DIR) { $WorkDir = $env:DSH_BOOTSTRAP_DIR }

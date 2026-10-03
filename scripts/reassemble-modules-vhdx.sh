@@ -17,7 +17,8 @@
 set -euo pipefail
 
 REPO="${REPO:-ZoeHao2026/wsl-kernel-7.2.8}"
-TAG="${TAG:-v7.2.8-wsl-kernel.2}"
+# TAG 留空 = 跟随最新 release；显式设置则固定到该版本
+TAG="${TAG:-}"
 PARTS="${PARTS:-58}"
 PREFIX="modules-7.2.8-microsoft-standard-WSL2.vhdx.4m"
 EXPECT_VHDX="89fe1d8d5af13c9a13b4311cc48ee63633ce55594dfcc528ad2520ce63cf0de3"
@@ -36,7 +37,11 @@ done
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-base="https://github.com/$REPO/releases/download/$TAG"
+if [ -n "$TAG" ]; then
+	base="https://github.com/$REPO/releases/download/$TAG"
+else
+	base="https://github.com/$REPO/releases/latest/download"
+fi
 
 printf '=== 取分片校验值 ===\n'
 curl -fSL --retry 3 -o "$work/PART4M-SHA256SUMS" "$base/PART4M-SHA256SUMS"

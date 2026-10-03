@@ -31,7 +31,7 @@
     Local directory holding the kernel artifacts (highest priority over -Tag).
 
 .PARAMETER TargetDir
-    Where kernel artifacts are placed. Defaults to %USERPROFILE%\wsl-kernel\<Tag>.
+    Where kernel artifacts are placed. Defaults to %USERPROFILE%\wsl-kernel\<release ref>.
 
 .PARAMETER SkipEnv
     Deploy the kernel only; do not call the WSL-side installer.
@@ -43,7 +43,7 @@
     Print what would happen, change nothing.
 
 .EXAMPLE
-    .\deploy\install.ps1 -Tag v7.2.8-wsl-kernel.2
+    .\deploy\install.ps1 -Tag v7.2.8-wsl-kernel.3
 
 .EXAMPLE
     .\deploy\install.ps1 -KernelDir C:\path\to\artifacts
@@ -53,7 +53,11 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Tag = 'v7.2.8-wsl-kernel.2',
+    # Empty = follow the newest release. Windows PowerShell 5.1 does not accept
+    # "latest" as a default for this kind of parameter, so the empty string is
+    # used as the "unset" marker and resolved to releases/latest below.
+    # Pin an exact build with e.g. -Tag v7.2.8-wsl-kernel.3.
+    [string]$Tag = '',
     [string]$Repo = 'ZoeHao2026/wsl-kernel-7.2.8',
     [string]$KernelDir,
     [string]$TargetDir,
@@ -67,13 +71,24 @@ param(
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $Rel = '7.2.8-microsoft-standard-WSL2'
+
+# Resolve the release reference. A pinned tag keeps every download on that exact
+# build; otherwise follow "latest" so this never goes stale.
+if ($Tag) {
+    $RelBase = "https://github.com/$Repo/releases/download/$Tag"
+    $RelRef  = $Tag
+} else {
+    $RelBase = "https://github.com/$Repo/releases/latest/download"
+    $RelRef  = 'latest'
+}
+
 $Names = @{
     Kernel  = "bzImage-$Rel"
     Modules = "modules-$Rel.vhdx"
     Sysmap  = "System.map-$Rel"
     Config  = "config-$Rel"
 }
-if (-not $TargetDir) { $TargetDir = Join-Path $env:USERPROFILE "wsl-kernel\$Tag" }
+if (-not $TargetDir) { $TargetDir = Join-Path $env:USERPROFILE "wsl-kernel\$RelRef" }
 
 function Say  { param([string]$m) Write-Host $m }
 function Step { param([string]$m) Write-Host "`n=== $m ===" -ForegroundColor Cyan }
@@ -113,7 +128,11 @@ function Resolve-KernelArtifacts {
             Say "  [dry-run] download the 58 module-disk parts and rebuild it"
         } elseif (Test-Path $reasm) {
             Warn "rebuilding the modules disk from release parts"
-            & $reasm -OutFile $complete -Repo $Repo -Tag $Tag 2>&1 | ForEach-Object { "    $_" }
+            if ($RelRef -eq 'latest') {
+                & $reasm -OutFile $complete -Repo $Repo 2>&1 | ForEach-Object { "    $_" }
+            } else {
+                & $reasm -OutFile $complete -Repo $Repo -Tag $RelRef 2>&1 | ForEach-Object { "    $_" }
+            }
             if (-not (Test-Path $complete)) { throw "modules disk rebuild failed" }
             Ok "modules disk rebuilt"
         } else {
@@ -124,7 +143,7 @@ function Resolve-KernelArtifacts {
     foreach ($k in @('Kernel','Sysmap','Config')) {
         $p = Join-Path $Dir $Names[$k]
         if (Test-Path $p) { continue }
-        $url = "https://github.com/$Repo/releases/download/$Tag/$($Names[$k])"
+        $url = "$RelBase/$($Names[$k])"
         if ($DryRun) { Say "  [dry-run] download $($Names[$k])"; continue }
         Warn "downloading $($Names[$k])"
         Invoke-WebRequest -Uri $url -OutFile $p -UseBasicParsing
@@ -145,7 +164,7 @@ function Test-KernelArtifacts {
     Step "Verify SHA-256"
     $sums = Join-Path $Dir 'SHA256SUMS'
     if (-not (Test-Path $sums)) {
-        $url = "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS"
+        $url = "$RelBase/SHA256SUMS"
         if ($DryRun) { Say "  [dry-run] fetch SHA256SUMS and verify every artifact"; return }
         try { Invoke-WebRequest -Uri $url -OutFile $sums -UseBasicParsing }
         catch { Warn "cannot fetch SHA256SUMS; skipping verification"; return }
@@ -279,7 +298,7 @@ function Invoke-WslEnvInstall {
 # ============================================================================
 Say "WSL custom kernel - one-command deploy" -ForegroundColor White
 Say "  repo        : $Repo"
-Say "  release     : $Tag"
+Say "  release     : $RelRef"
 Say "  kernel ver  : $Rel"
 Say "  artifacts   : $TargetDir"
 Say "  distro      : $Distro"
@@ -323,3 +342,4 @@ if ($SkipKernel) {
 Say ""
 Say ("  inspect the environment fixes: wsl -d {0} -u root -e bash <repo>/deploy/wsl-env/install.sh --status" -f $Distro)
 Say "  rollback: .wslconfig backups are .wslconfig.bak-* next to it; old kernel artifacts per README."
+
