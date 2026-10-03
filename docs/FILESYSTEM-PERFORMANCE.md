@@ -210,7 +210,112 @@ run-to-run 波动可达 ±50%（同一内核多次运行也能看到 2.0↔2.8 G
 
 ---
 
-## 6. 一句话结论
+## 6. 部署层修复：三件与内核无关但确实影响可用性的事
+
+以下三项**都不改内核**（内核侧在本版已无待办），属于 WSL 环境配置。记录在此是因为
+它们各自都曾表现为"内核/驱动有问题"，而实际原因不同。
+
+### 6.1 `/tmp/.X11-unix` 的启动竞态 —— 一半的冷启动会让所有 GUI 程序失败
+
+**现象**：`DISPLAY=:0`，GUI 程序报 `couldn't connect to display ":0"`。
+**实测频率**：10 次冷启动里约一半失败，不是罕见情况。
+
+**根因**（用 `findmnt`、`/proc/self/mountinfo`、`systemctl status` 逐步确认）：
+
+WSL 会生成一个 `wslg.service`，内容是
+
+```
+/bin/mount -o bind,ro,X-mount.mkdir -t none /mnt/wslg/.X11-unix /tmp/.X11-unix
+```
+
+它只声明了 `After=tmp.mount`。而 `/tmp` 本身是 `tmp.mount` 挂上来的 tmpfs：
+
+```
+tmp.mount: Directory /tmp to mount over is not empty, mounting anyway.
+tmp.mount  Mounted  [3.323515]
+```
+
+两者存在时序竞态。当 `mount(8)` 抢在 tmpfs 就位之前跑完时，它是在 rootfs 的 `/tmp`
+上建出挂载点的，随后 tmpfs 盖到 `/tmp`，把这个路径整个盖住。结果：
+
+- `mount` 表里有 `/tmp/.X11-unix`（一条 `none[/.X11-unix] tmpfs ro` 记录）
+- 文件系统里**没有**这个路径（`stat` 报 No such file or directory）
+- 于是 `:0` 无法解析，GUI 全线失败
+- 关机时 `umount` 该路径报 `not mounted`，失败状态被带进下一次启动 ——
+  这就是本仓库 README 里长期记录的 `systemctl is-system-running` = `degraded`
+  的真正来源（**不是内核问题**，此前只能存疑）
+
+**修复**（两层，都已落地并各测 5 次冷启动）：
+
+1. `/etc/profile.d/50-wsl-display.sh` —— 登录时若 `:0` 不通而
+   `/mnt/wslg/.X11-unix/X0` 在，就把 `DISPLAY` 指向后者。
+   该路径由 virtiofs 提供、不受 `/tmp` 竞态影响，因此是**确定**的。
+   实测 5/5 冷启动 GUI 均可用。
+2. `wsl-x11-socket.service` + `/usr/local/libexec/ensure-wsl-x11-socket.sh` ——
+   启动时尽力把 `/tmp/.X11-unix` 修回来（幂等，已可用则不动；失败也不让启动变
+   failed），覆盖不读取 profile 的场景（systemd 用户单元、容器、IDE 后端）。
+   实测在服务跑起来的那些启动里，`env -i DISPLAY=:0` 与 `systemd-run` 两种
+   非登录上下文都能连上。
+
+> 试过但**无效**的两种做法，记下来免得后来者重走：
+> 用 `tmpfiles.d` 建目录 —— Ubuntu 里 `systemd-tmpfiles-setup.service` 被 WSL
+> 禁用（`ConditionResult=no`），规则不会执行；用 `systemd-tmpfiles --create`
+> 手动跑才生效，但启动时不会跑。以及用 `mask` 遮蔽同路径的 tmpfs 单元 ——
+> 竞态来自 WSL 自己的 `mount` 命令，遮蔽 systemd 侧单元改变不了它。
+
+### 6.2 GPU 硬件加速：可用，但默认**不应该**开
+
+**此前的结论需要更正**：不存在"必须更新 Windows 驱动才能有 GPU"这回事。
+`/dev/dri` 确实不存在，但 Mesa 的 `d3d12` 后端走的是 WSL 的 `libdxcore.so`
+用户态桥，**绕过 `/dev/dri`，也绕过 dxgkrnl 的适配器查询**。所以本机那 10 条
+`dxgkio_query_adapter_info: Ioctl failed: -22` 对这条路径没有影响。
+
+实测：
+
+```text
+默认:     llvmpipe (LLVM 21.1.8, 256 bits)   Accelerated: no    OpenGL 4.5
+d3d12:    D3D12 (Intel(R) Arc(TM) Graphics)  Accelerated: yes   OpenGL 4.6
+```
+
+**但默认不启用**，因为实测普通 GUI 负载并不会更快：
+
+| 负载 | llvmpipe（默认） | d3d12 |
+|---|---|---|
+| glxgears 小窗口（同步/往返密集） | 1060 FPS | 199 FPS |
+| glxgears 1600×1000（填充率） | 316 FPS | 118 FPS |
+| Tk 顶点密集型画布 1280×720 | 137 fps | 136 fps |
+
+原因是每次 GL 调用都要从 guest 经共享内存通道打到 Windows 侧的 GPU，往返延迟
+盖过了硬件收益；而这些负载本来就被 X11 传输和 CPU 支配，不卡在渲染上。
+`d3d12` 的价值在**软件渲染跑不动**的场景：需要 OpenGL 4.6 或 Vulkan 的应用、
+Blender 类 3D 负载、任何真正吃 GPU 的计算。
+
+因此做成了具名开关而不是默认打开：
+
+```bash
+wsl-gpu status    # 查看当前渲染器 + 探测 d3d12 是否可用
+wsl-gpu on        # 为之后的登录会话启用（写入 /etc/profile.d/50-wsl-gpu.sh）
+wsl-gpu off       # 恢复默认软件渲染
+wsl-gpu test      # 立刻用 d3d12 探测一次，不改变默认
+```
+
+### 6.3 内存只分到宿主的一半
+
+宿主 **31.6 GiB**，而 `.wslconfig` 未设置 `memory=` 时 WSL 默认只取 **50%**，
+即 15 GiB。已在 `%USERPROFILE%\.wslconfig` 的 `[wsl2]` 段加：
+
+```ini
+memory=24GB
+```
+
+实测生效：`Mem: 23Gi`（24 GB 名义值扣掉内核/固件保留后的可见值）。
+
+顺带确认内存子系统本身不缺：逐页写满 16 GiB 无 OOM，触发压缩换页时
+zram 把 **63 MiB 压到 9.2 MiB（约 2.6×）**，压缩率与容量都健康 ——
+所以这一项是"把上限还给用户"，不是在救火。
+
+
+## 7. 一句话结论
 
 - **要快，就把文件放在 ext4 上**（`/home/...`），这是唯一有数量级收益的做法，
   和 Microsoft 文档的建议一致。
