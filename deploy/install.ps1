@@ -245,7 +245,10 @@ function Invoke-WslEnvInstall {
     }
 
     if ($DryRun) {
-        Say "  [dry-run] wsl -d $Distro -u root -e bash <repo>/deploy/wsl-env/install.sh --dry-run"
+        Say "  [dry-run] would run inside WSL as root:"
+        Say "      cd $src && chmod +x install.sh && ./install.sh"
+        Say "  [dry-run] if that path is not reachable from Windows, the assets are"
+        Say "            copied into a WSL /tmp dir first and run from there."
         return
     }
 
