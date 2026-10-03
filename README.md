@@ -287,21 +287,27 @@ qemu-img check ./modules-7.2.8-microsoft-standard-WSL2.vhdx
 
 ```powershell
 # Windows：下载部署包、解包、装内核 + 环境，全程一条命令
-irm https://raw.githubusercontent.com/ZoeHao2026/wsl-kernel-7.2.8/main/deploy/bootstrap.ps1 | iex
+irm https://github.com/ZoeHao2026/wsl-kernel-7.2.8/releases/latest/download/bootstrap.ps1 | iex
 
 # 想把参数转给 install.ps1（例如只装环境、或只看计划）
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ZoeHao2026/wsl-kernel-7.2.8/main/deploy/bootstrap.ps1))) -SkipKernel -DryRun
+& ([scriptblock]::Create((irm https://github.com/ZoeHao2026/wsl-kernel-7.2.8/releases/latest/download/bootstrap.ps1))) -SkipKernel -DryRun
 ```
 
 ```bash
 # WSL 侧：只装环境修复
-curl -fsSL https://raw.githubusercontent.com/ZoeHao2026/wsl-kernel-7.2.8/main/deploy/bootstrap.sh \
+curl -fsSL https://github.com/ZoeHao2026/wsl-kernel-7.2.8/releases/latest/download/bootstrap.sh \
   | sudo bash
 
 # 追加参数会原样转发给 install.sh
-curl -fsSL https://raw.githubusercontent.com/ZoeHao2026/wsl-kernel-7.2.8/main/deploy/bootstrap.sh \
+curl -fsSL https://github.com/ZoeHao2026/wsl-kernel-7.2.8/releases/latest/download/bootstrap.sh \
   | sudo bash -s -- --status
 ```
+
+> **为什么地址不是 `raw.githubusercontent.com`**：raw 的 CDN 有陈旧缓存，
+> 仓库刚推送的内容会有一段时间仍返回旧版本（本项目实测连续两次被它误导 ——
+> 一行命令下载回来的是上一版的脚本，安装到错误的目录）。改成 release 附件地址后
+> `releases/latest/download/...` 始终指向最新版本，没有这个缓存问题。
+> 需要可复现时用 `-Tag <版本>` 或 git checkout 对应 tag。
 
 引导脚本做的事：下载 `wsl-kernel-deploy.zip` / `.tar.gz` → **校验压缩包魔数**
 （防止把代理或门户的错误页当成包）→ 解包到临时目录 → 运行对应的安装器 →
