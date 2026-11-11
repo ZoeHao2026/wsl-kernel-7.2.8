@@ -2,10 +2,11 @@
 # ============================================================================
 # install.sh —— WSL 侧一键部署（必须 root）
 #
-# 装三件与「环境」相关的东西，都不需要重编内核：
+# 装四件与「环境」相关的东西，都不需要重编内核：
 #   1. /tmp/.X11-unix 启动竞态的兜底（约一半冷启动会让 GUI 全部失败）
-#   2. zram(zstd) 压缩交换 + swappiness/page-cluster 微调
-#   3. wsl-gpu 开关（Intel Arc 硬件加速，按需启用，默认关）
+#   2. zram(zstd) 压缩交换 + swappiness/page-cluster 微调（幂等、多发行版安全）
+#   3. AppArmor/securityfs 启动顺序修复（保证 profile 在冷启动时能加载）
+#   4. wsl-gpu 开关（Intel Arc 硬件加速，按需启用，默认关）
 #
 # 用法:
 #   sudo ./install.sh              安装/更新全部
@@ -44,7 +45,10 @@ PROFILE=/etc/profile.d/50-wsl-display.sh
 UNIT=/etc/systemd/system/wsl-x11-socket.service
 HELPER=/usr/local/libexec/ensure-wsl-x11-socket.sh
 ZRAM_UNIT=/etc/systemd/system/zram-wsl.service
+ZRAM_HELPER=/usr/local/libexec/zram-wsl-setup
 SYSCTL=/etc/sysctl.d/90-wsl-zram-sysctl.conf
+SECURITYFS_UNIT=/etc/systemd/system/wsl-securityfs.service
+APPARMOR_DROPIN=/etc/systemd/system/apparmor.service.d/20-wsl-boot.conf
 GPUBIN=/usr/local/bin/wsl-gpu
 
 changed=0
@@ -93,12 +97,20 @@ do_status() {
 	echo
 	echo "=== 2. zram 压缩交换 ==="
 	printf '  %-52s %s\n' "$ZRAM_UNIT" "$([ -f "$ZRAM_UNIT" ] && echo 已装 || echo 未装)"
+	printf '  %-52s %s\n' "$ZRAM_HELPER" "$([ -x "$ZRAM_HELPER" ] && echo 已装 || echo 未装)"
 	printf '  %-52s %s\n' "$SYSCTL" "$([ -f "$SYSCTL" ] && echo 已装 || echo 未装)"
 	printf '  %-52s %s\n' "zram-wsl.service" "$(systemctl is-active zram-wsl.service 2>&1)"
 	printf '  %-52s %s\n' "zramctl" "$(zramctl --noheadings 2>/dev/null | tr -s ' ' || echo 无设备)"
 	printf '  %-52s %s\n' "vm.swappiness / page-cluster" "$(sysctl -n vm.swappiness 2>/dev/null) / $(sysctl -n vm.page-cluster 2>/dev/null)"
 	echo
-	echo "=== 3. GPU 开关 ==="
+	echo "=== 3. AppArmor / securityfs ==="
+	printf '  %-52s %s\n' "$SECURITYFS_UNIT" "$([ -f "$SECURITYFS_UNIT" ] && echo 已装 || echo 未装)"
+	printf '  %-52s %s\n' "$APPARMOR_DROPIN" "$([ -f "$APPARMOR_DROPIN" ] && echo 已装 || echo 未装)"
+	printf '  %-52s %s\n' "apparmor.service" "$(systemctl is-active apparmor.service 2>&1)"
+	printf '  %-52s %s\n' "securityfs" "$(findmnt -n -o FSTYPE /sys/kernel/security 2>/dev/null || echo 未挂载)"
+	printf '  %-52s %s\n' "loaded profiles" "$(aa-status 2>/dev/null | awk '/profiles are loaded/{print $1}' || echo -)"
+	echo
+	echo "=== 4. GPU 开关 ==="
 	printf '  %-52s %s\n' "$GPUBIN" "$([ -x "$GPUBIN" ] && echo 已装 || echo 未装)"
 	if [ -x "$GPUBIN" ]; then "$GPUBIN" status; fi
 	echo
@@ -114,7 +126,7 @@ do_install() {
 	need_root "$@"
 	log "从 $ASSETS 安装到系统"
 	echo
-	echo "=== 1/3 X11 socket 启动竞态兜底 ==="
+	echo "=== 1/4 X11 socket 启动竞态兜底 ==="
 	install_if_diff "$ASSETS/50-wsl-display.sh"          "$PROFILE"   644
 	install_if_diff "$ASSETS/ensure-wsl-x11-socket.sh"   "$HELPER"    755
 	install_if_diff "$ASSETS/wsl-x11-socket.service"     "$UNIT"      644
@@ -133,10 +145,11 @@ do_install() {
 	printf '    2026-10-24 优化版实测 5/5 冷启动可用；若仍失败，登录 shell 由 profile.d 兜底。\n'
 	printf '  · /tmp/.X11-unix/X0 -> %s\n' "$([ -S /tmp/.X11-unix/X0 ] && echo 就绪 || echo '当前不可用（登录时由 profile.d 兜底）')"
 	echo
-	echo "=== 2/3 zram 压缩交换 ==="
+	echo "=== 2/4 zram 压缩交换 ==="
 	if ! kconfig_is CONFIG_ZRAM m && ! kconfig_is CONFIG_ZRAM y; then
-		log "  ! 当前内核没有 CONFIG_ZRAM，跳过 zram（本仓库 7.2.8 配置里有）"
+		log "  ! 当前内核没有 CONFIG_ZRAM，跳过 zram（本仓库 7.3.4 配置里有）"
 	else
+		install_if_diff "$ASSETS/zram-wsl-setup.sh"       "$ZRAM_HELPER" 755
 		install_if_diff "$ASSETS/zram-wsl.service"        "$ZRAM_UNIT" 644
 		install_if_diff "$ASSETS/90-wsl-zram-sysctl.conf" "$SYSCTL"    644
 		if [ "$DRY" = 1 ]; then
@@ -150,7 +163,27 @@ do_install() {
 		fi
 	fi
 	echo
-	echo "=== 3/3 wsl-gpu 开关 ==="
+	echo "=== 3/4 AppArmor / securityfs ==="
+	install_if_diff "$ASSETS/wsl-securityfs.service" "$SECURITYFS_UNIT" 644
+	if [ "$DRY" = 1 ]; then
+		act "install -d $(dirname "$APPARMOR_DROPIN")"
+	else
+		install -d -m 755 "$(dirname "$APPARMOR_DROPIN")"
+	fi
+	install_if_diff "$ASSETS/apparmor-20-wsl-boot.conf" "$APPARMOR_DROPIN" 644
+	if [ "$DRY" = 1 ]; then
+		act "systemctl daemon-reload；systemctl enable --now wsl-securityfs.service；systemctl restart apparmor.service"
+	else
+		systemctl daemon-reload
+		systemctl enable --now wsl-securityfs.service >/dev/null 2>&1 || true
+		printf '  + wsl-securityfs.service %s\n' "$(systemctl is-active wsl-securityfs.service 2>&1)"
+		systemctl restart apparmor.service >/dev/null 2>&1 || true
+		printf '  + apparmor.service %s（%s 个 profile）\n' \
+			"$(systemctl is-active apparmor.service 2>&1)" \
+			"$(aa-status 2>/dev/null | awk '/profiles are loaded/{print $1}' || echo '?')"
+	fi
+	echo
+	echo "=== 4/4 wsl-gpu 开关 ==="
 	install_if_diff "$ASSETS/wsl-gpu" "$GPUBIN" 755
 	printf '  · 用法: wsl-gpu status | on | off | test\n'
 	echo
@@ -171,10 +204,10 @@ do_uninstall() {
 	log "卸载本脚本安装的内容（其它配置不动）"
 	echo
 	if [ "$DRY" = 1 ]; then
-		for f in "$PROFILE" "$UNIT" "$HELPER" "$ZRAM_UNIT" "$SYSCTL" "$GPUBIN"; do
+		for f in "$PROFILE" "$UNIT" "$HELPER" "$ZRAM_UNIT" "$ZRAM_HELPER" "$SYSCTL" "$SECURITYFS_UNIT" "$APPARMOR_DROPIN" "$GPUBIN"; do
 			[ -e "$f" ] && act "删除 $f"
 		done
-		act "systemctl disable --now wsl-x11-socket.service zram-wsl.service"
+		act "systemctl disable --now wsl-x11-socket.service zram-wsl.service wsl-securityfs.service"
 		act "swapoff /dev/zram0（若在用）"
 		act "chattr -i /tmp/.X11-unix（若被加了 immutable）"
 		log "dry-run 结束。"
@@ -182,8 +215,9 @@ do_uninstall() {
 	fi
 	systemctl disable --now wsl-x11-socket.service >/dev/null 2>&1
 	systemctl disable --now zram-wsl.service >/dev/null 2>&1
+	systemctl disable --now wsl-securityfs.service >/dev/null 2>&1
 	swapoff /dev/zram0 2>/dev/null || true
-	for f in "$PROFILE" "$UNIT" "$HELPER" "$ZRAM_UNIT" "$SYSCTL" "$GPUBIN"; do
+	for f in "$PROFILE" "$UNIT" "$HELPER" "$ZRAM_UNIT" "$ZRAM_HELPER" "$SYSCTL" "$SECURITYFS_UNIT" "$APPARMOR_DROPIN" "$GPUBIN"; do
 		if [ -e "$f" ]; then rm -f "$f" && printf '  - 已删除    %s\n' "$f"; fi
 	done
 	# 解除 immutable，否则 /tmp/.X11-unix 之后无法被正常管理
