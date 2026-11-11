@@ -8,12 +8,12 @@
 #   布局: flat (默认) 或 nested, 见下方「目录布局」。
 #
 # 例:
-#   ./scripts/gen-modules-vhdx.sh ./modules-root 7.2.8-microsoft-standard-WSL2 \
-#       ./modules-7.2.8-microsoft-standard-WSL2.vhdx
+#   ./scripts/gen-modules-vhdx.sh ./modules-root 7.3.4-microsoft-standard-WSL2 \
+#       ./modules-7.3.4-microsoft-standard-WSL2.vhdx
 #
 # 目录布局
 # --------
-#   flat   —— 镜像根就是 <kernelrelease>/。本机 7.2.8 及更早的模块盘使用的
+#   flat   —— 镜像根就是 <kernelrelease>/。本机 7.3.4 及更早的模块盘使用的
 #             就是这个布局，已经实际验证能启动，所以是默认值。
 #   nested —— <kernelrelease>/{modules,linux-headers,perf}。这是 Microsoft
 #             WSL 内核仓库更新 gen_modules_vhdx.sh 之后的布局。
@@ -77,7 +77,7 @@ trap 'rm -rf "$tmp_dir"' EXIT
 # 两种布局
 #
 #   flat   —— 镜像根就是 <kernelrelease>/ (modules.dep, kernel/, ...)。
-#             这是本机 7.2.8 及其之前的模块盘实际使用的布局, 已验证能启动。
+#             这是本机 7.3.4 及其之前的模块盘实际使用的布局, 已验证能启动。
 #             **默认值**, 与现网部署保持一致。
 #
 #   nested —— <kernelrelease>/{modules,linux-headers,perf}。这是 Microsoft

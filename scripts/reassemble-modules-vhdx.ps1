@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-    Rebuild modules-7.2.8-microsoft-standard-WSL2.vhdx from release parts.
+    Rebuild modules-7.3.4-microsoft-standard-WSL2.vhdx from release parts.
 
 .DESCRIPTION
     Why the modules disk is split: POSTs from this network to
     uploads.github.com are reset by the peer at roughly 16 MiB - both a
     16 MiB and a 40 MiB test body were cut at about 16.7 MB - so the
-    243 MB modules disk cannot be published as one file. Attachments
+    136 MB modules disk cannot be published as one file. Attachments
     larger than 48 MiB are therefore published in 4 MiB parts.
 
     This script downloads every part, verifies each part's SHA-256,
@@ -19,7 +19,7 @@
     text here would be mangled and can break parsing outright.
 
 .PARAMETER OutFile
-    Output path. Defaults to modules-7.2.8-microsoft-standard-WSL2.vhdx
+    Output path. Defaults to modules-7.3.4-microsoft-standard-WSL2.vhdx
     in the current directory.
 
 .PARAMETER KeepParts
@@ -27,7 +27,7 @@
 
 .EXAMPLE
     .\reassemble-modules-vhdx.ps1
-    Downloads all parts and writes modules-7.2.8-microsoft-standard-WSL2.vhdx
+    Downloads all parts and writes modules-7.3.4-microsoft-standard-WSL2.vhdx
 
 .EXAMPLE
     .\reassemble-modules-vhdx.ps1 -UseDirectUrl
@@ -35,12 +35,12 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$OutFile = (Join-Path (Get-Location) 'modules-7.2.8-microsoft-standard-WSL2.vhdx'),
+    [string]$OutFile = (Join-Path (Get-Location) 'modules-7.3.4-microsoft-standard-WSL2.vhdx'),
     [string]$Repo = 'ZoeHao2026/wsl-kernel-7.2.8',
     # Empty = follow the newest release; pin an exact build with -Tag.
     [string]$Tag = '',
-    [int]$PartCount = 58,
-    [string]$ExpectedVhdxSha256 = '89fe1d8d5af13c9a13b4311cc48ee63633ce55594dfcc528ad2520ce63cf0de3',
+    [int]$PartCount = 34,
+    [string]$ExpectedVhdxSha256 = '369502e174626874362b06973cdcf8a07a110d7f6f38413e460ca3c3433f61bd',
     [switch]$UseDirectUrl,
     [switch]$KeepParts
 )
@@ -54,7 +54,7 @@ if ($Tag) {
 } else {
     $RelBase = "https://github.com/$Repo/releases/latest/download"
 }
-$prefix = 'modules-7.2.8-microsoft-standard-WSL2.vhdx.4m'
+$prefix = 'modules-7.3.4-microsoft-standard-WSL2.vhdx.4m'
 
 # Refuse to clobber silently: the user may have a modules disk in use.
 if (Test-Path $OutFile) {

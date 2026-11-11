@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# 从 release 分片重建 modules-7.2.8-microsoft-standard-WSL2.vhdx（Linux / WSL 侧）
+# 从 release 分片重建 modules-7.3.4-microsoft-standard-WSL2.vhdx（Linux / WSL 侧）
 #
 # 用法:
 #   ./reassemble-modules-vhdx.sh [输出路径]
@@ -8,7 +8,7 @@
 # 为什么模块盘是分片的
 # --------------------
 # 本条网络到 uploads.github.com 的 POST 在约 16 MiB 处被对端重置（16 MiB 与
-# 40 MiB 的测试体都在 ~16.7 MB 处断开），因此 243 MB 的模块盘无法整文件上传。
+# 40 MiB 的测试体都在 ~16.7 MB 处断开），因此 136 MB 的模块盘无法整文件上传。
 # 超过约 48 MiB 的附件都按 4 MiB 分片发布。
 #
 # 本脚本下载全部分片、逐片校验 SHA-256、拼接、再校验整体 SHA-256。
@@ -19,11 +19,11 @@ set -euo pipefail
 REPO="${REPO:-ZoeHao2026/wsl-kernel-7.2.8}"
 # TAG 留空 = 跟随最新 release；显式设置则固定到该版本
 TAG="${TAG:-}"
-PARTS="${PARTS:-58}"
-PREFIX="modules-7.2.8-microsoft-standard-WSL2.vhdx.4m"
-EXPECT_VHDX="89fe1d8d5af13c9a13b4311cc48ee63633ce55594dfcc528ad2520ce63cf0de3"
+PARTS="${PARTS:-34}"
+PREFIX="modules-7.3.4-microsoft-standard-WSL2.vhdx.4m"
+EXPECT_VHDX="369502e174626874362b06973cdcf8a07a110d7f6f38413e460ca3c3433f61bd"
 
-OUT="${1:-$PWD/modules-7.2.8-microsoft-standard-WSL2.vhdx}"
+OUT="${1:-$PWD/modules-7.3.4-microsoft-standard-WSL2.vhdx}"
 
 if [ -e "$OUT" ]; then
 	printf '拒绝覆盖已存在的文件: %s\n' "$OUT" >&2

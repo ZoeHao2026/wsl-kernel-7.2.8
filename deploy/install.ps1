@@ -43,7 +43,7 @@
     Print what would happen, change nothing.
 
 .EXAMPLE
-    .\deploy\install.ps1 -Tag v7.2.8-wsl-kernel.3
+    .\deploy\install.ps1 -Tag v7.3.4-wsl-kernel.1
 
 .EXAMPLE
     .\deploy\install.ps1 -KernelDir C:\path\to\artifacts
@@ -56,7 +56,7 @@ param(
     # Empty = follow the newest release. Windows PowerShell 5.1 does not accept
     # "latest" as a default for this kind of parameter, so the empty string is
     # used as the "unset" marker and resolved to releases/latest below.
-    # Pin an exact build with e.g. -Tag v7.2.8-wsl-kernel.3.
+    # Pin an exact build with e.g. -Tag v7.3.4-wsl-kernel.1.
     [string]$Tag = '',
     [string]$Repo = 'ZoeHao2026/wsl-kernel-7.2.8',
     [string]$KernelDir,
@@ -70,7 +70,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$Rel = '7.2.8-microsoft-standard-WSL2'
+$Rel = '7.3.4-microsoft-standard-WSL2'
 
 # Resolve the release reference. A pinned tag keeps every download on that exact
 # build; otherwise follow "latest" so this never goes stale.
@@ -120,12 +120,12 @@ function Resolve-KernelArtifacts {
 
     Warn "missing: $($missing -join ', ')"
 
-    # The modules disk is published as 58 parts, so the single file is usually absent.
+    # The modules disk is published as 34 parts, so the single file is usually absent.
     if ($missing -contains $Names.Modules) {
         $complete = Join-Path $Dir $Names.Modules
         $reasm = Join-Path $RepoRoot 'scripts\reassemble-modules-vhdx.ps1'
         if ($DryRun) {
-            Say "  [dry-run] download the 58 module-disk parts and rebuild it"
+            Say "  [dry-run] download the 34 module-disk parts and rebuild it"
         } elseif (Test-Path $reasm) {
             Warn "rebuilding the modules disk from release parts"
             if ($RelRef -eq 'latest') {

@@ -1,0 +1,38 @@
+From 88f9af31e14ed3643e1145b800e6a9faa42e2b26 Mon Sep 17 00:00:00 2001
+From: ZoeHao2026 <ZoeHao2026@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 20:36:47 +0800
+Subject: [PATCH] swiotlb: pass vaddr and set cc_shared for 7.3
+
+---
+ kernel/dma/swiotlb.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/kernel/dma/swiotlb.c b/kernel/dma/swiotlb.c
+index 89b6ae6..37d2941 100644
+--- a/kernel/dma/swiotlb.c
++++ b/kernel/dma/swiotlb.c
+@@ -2143,9 +2143,20 @@ struct io_tlb_mem *swiotlb_create_pool(phys_addr_t base, size_t size,
+ 		return ERR_PTR(-ENOMEM);
+ 	}
+ 
++	/*
++	 * 7.3 keeps the "is this pool decrypted/shared" state per pool and
++	 * refuses DMA through a pool whose flag does not match the platform
++	 * (see swiotlb_create_default_pools()). The region handed to this
++	 * pool is decrypted below, so mark it shared when memory encryption
++	 * is active; otherwise VPCI DMA silently returns DMA_MAPPING_ERROR.
++	 */
++	if (cc_platform_has(CC_ATTR_MEM_ENCRYPT))
++		mem->cc_shared = true;
++
+ 	set_memory_decrypted((unsigned long)phys_to_virt(base),
+ 			     size >> PAGE_SHIFT);
+-	swiotlb_init_io_tlb_pool(pool, base, nslabs, false, nareas);
++	swiotlb_init_io_tlb_pool(pool, base, phys_to_virt(base), nslabs,
++				false, nareas);
+ 	mem->force_bounce = true;
+ 	mem->for_alloc = false;
+ #ifdef CONFIG_SWIOTLB_DYNAMIC
+-- 
+2.53.0
+

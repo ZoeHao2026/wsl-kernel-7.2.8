@@ -34,7 +34,7 @@
 param(
     # Empty = follow the newest release. Windows PowerShell 5.1 does not accept
     # "latest" as a default here, so the empty string is the "unset" marker and
-    # is resolved below. Pin an exact build with -Tag v7.2.8-wsl-kernel.3.
+    # is resolved below. Pin an exact build with -Tag v7.3.4-wsl-kernel.1.
     [string]$Tag = '',
     [string]$Repo = 'ZoeHao2026/wsl-kernel-7.2.8',
     [string]$BundleUrl,
