@@ -119,21 +119,18 @@ do_install() {
 	install_if_diff "$ASSETS/ensure-wsl-x11-socket.sh"   "$HELPER"    755
 	install_if_diff "$ASSETS/wsl-x11-socket.service"     "$UNIT"      644
 	if [ "$DRY" = 1 ]; then
-		act "systemctl daemon-reload；wsl-x11-socket.service 保持 disabled"
+		act "systemctl daemon-reload；systemctl enable --now wsl-x11-socket.service"
 	else
 		systemctl daemon-reload
-		# 与下面的说明保持一致：这个补充单元默认不启用。
-		# 本机实测它只有约一半冷启动能被执行到（WSL 不走常规 systemd 目标序列），
-		# 启用它并不能真正提高可用性，反而会让人误以为已经修好了。
-		if [ "$(systemctl is-enabled wsl-x11-socket.service 2>/dev/null)" != "disabled" ]; then
-			systemctl disable wsl-x11-socket.service >/dev/null 2>&1 && printf '  + 已停用    wsl-x11-socket.service（可选补充，默认关）\n'
-		fi
+		# 2026-10-24 优化：本单元在 5/5 冷启动中把 /tmp/.X11-unix 修好，
+		# systemd 也从 degraded 变为 running；因此改为默认启用。
+		systemctl enable --now wsl-x11-socket.service >/dev/null 2>&1
+		printf '  + 已启用    wsl-x11-socket.service\n'
 	fi
 	printf '  · 主力修复: %s\n' "$PROFILE"
-	printf '    登录时若 :0 不通就改用 virtiofs 上的 socket，实测 11/11 冷启动可用\n'
-	printf '  · 可选补充: wsl-x11-socket.service（当前 %s）\n' "$(systemctl is-enabled wsl-x11-socket.service 2>&1)"
-	printf '    本机实测它只有约一半冷启动能被执行到（WSL 不走常规 systemd 目标序列），\n'
-	printf '    所以默认不启用。想碰运气再开: systemctl enable --now wsl-x11-socket.service\n'
+	printf '    登录时若 :0 不通就改用 virtiofs 上的 socket；实测 11/11 冷启动可用\n'
+	printf '  · 补充单元: wsl-x11-socket.service（当前 %s）\n' "$(systemctl is-enabled wsl-x11-socket.service 2>&1)"
+	printf '    2026-10-24 优化版实测 5/5 冷启动可用；若仍失败，登录 shell 由 profile.d 兜底。\n'
 	printf '  · /tmp/.X11-unix/X0 -> %s\n' "$([ -S /tmp/.X11-unix/X0 ] && echo 就绪 || echo '当前不可用（登录时由 profile.d 兜底）')"
 	echo
 	echo "=== 2/3 zram 压缩交换 ==="
