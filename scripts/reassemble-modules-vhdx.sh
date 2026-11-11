@@ -21,7 +21,7 @@ REPO="${REPO:-ZoeHao2026/wsl-kernel-7.2.8}"
 TAG="${TAG:-}"
 PARTS="${PARTS:-34}"
 PREFIX="modules-7.3.4-microsoft-standard-WSL2.vhdx.4m"
-EXPECT_VHDX="369502e174626874362b06973cdcf8a07a110d7f6f38413e460ca3c3433f61bd"
+EXPECT_VHDX="96e7165ac5fa2039e55a1b2d0f85f53573b21c54d07e9f3e49db4b54aea640b9"
 
 OUT="${1:-$PWD/modules-7.3.4-microsoft-standard-WSL2.vhdx}"
 

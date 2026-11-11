@@ -1,17 +1,20 @@
-From bb0adc4badaeb14706c7a3d0f6696999234847b9 Mon Sep 17 00:00:00 2001
+From 06c68dbda83086d9cb687698488b0094e5b5c0fd Mon Sep 17 00:00:00 2001
 From: ZoeHao2026 <ZoeHao2026@users.noreply.github.com>
-Date: Wed, 11 Nov 2026 20:36:47 +0800
+Date: Wed, 11 Nov 2026 21:15:19 +0800
 Subject: [PATCH] port: Microsoft WSL2 6.18.58 support on Linux 7.3.4
 
 ---
  arch/x86/kernel/cpu/mshyperv.c      |   14 +
+ arch/x86/kvm/vmx/vmx_onhyperv.c     |    2 +-
+ arch/x86/pci/common.c               |    2 +-
+ arch/x86/pci/init.c                 |    4 +-
  drivers/clocksource/hyperv_timer.c  |   31 +-
  drivers/hv/Kconfig                  |    4 +-
  drivers/hv/Makefile                 |    1 +
  drivers/hv/dxgkrnl/Kconfig          |   28 +
  drivers/hv/dxgkrnl/Makefile         |    5 +
  drivers/hv/dxgkrnl/dxgadapter.c     | 1375 ++++++
- drivers/hv/dxgkrnl/dxgkrnl.h        | 1074 +++++
+ drivers/hv/dxgkrnl/dxgkrnl.h        | 1087 +++++
  drivers/hv/dxgkrnl/dxgmodule.c      |  972 +++++
  drivers/hv/dxgkrnl/dxgprocess.c     |  348 ++
  drivers/hv/dxgkrnl/dxgsyncfile.c    |  477 +++
@@ -29,7 +32,7 @@ Subject: [PATCH] port: Microsoft WSL2 6.18.58 support on Linux 7.3.4
  include/linux/swiotlb.h             |    2 +
  include/uapi/misc/d3dkmthk.h        | 1878 ++++++++
  kernel/dma/swiotlb.c                |   75 +
- 25 files changed, 18810 insertions(+), 6 deletions(-)
+ 28 files changed, 18827 insertions(+), 10 deletions(-)
  create mode 100644 drivers/hv/dxgkrnl/Kconfig
  create mode 100644 drivers/hv/dxgkrnl/Makefile
  create mode 100644 drivers/hv/dxgkrnl/dxgadapter.c
@@ -79,6 +82,47 @@ index b4af7c0..1b4b4cb 100644
  	hv_identify_partition_type();
  
  	if (hv_root_partition())
+diff --git a/arch/x86/kvm/vmx/vmx_onhyperv.c b/arch/x86/kvm/vmx/vmx_onhyperv.c
+index b9a8b91..0739ad2 100644
+--- a/arch/x86/kvm/vmx/vmx_onhyperv.c
++++ b/arch/x86/kvm/vmx/vmx_onhyperv.c
+@@ -18,7 +18,7 @@ DEFINE_STATIC_KEY_FALSE(__kvm_is_using_evmcs);
+ 										\
+ 		unsupported = vmcs_conf->field & ~EVMCS1_SUPPORTED_ ## ctrl;	\
+ 		if (unsupported) {						\
+-			pr_warn_once(#field " unsupported with eVMCS: 0x%llx\n",\
++			pr_info_once(#field " unsupported with eVMCS: 0x%llx\n",\
+ 				     (u64)unsupported);				\
+ 			vmcs_conf->field &= EVMCS1_SUPPORTED_ ## ctrl;		\
+ 		}								\
+diff --git a/arch/x86/pci/common.c b/arch/x86/pci/common.c
+index 63105b2..5da5567 100644
+--- a/arch/x86/pci/common.c
++++ b/arch/x86/pci/common.c
+@@ -501,7 +501,7 @@ void __init pcibios_set_cache_line_size(void)
+ int __init pcibios_init(void)
+ {
+ 	if (!raw_pci_ops && !raw_pci_ext_ops) {
+-		printk(KERN_WARNING "PCI: System does not support PCI\n");
++		printk(KERN_INFO "PCI: System does not support PCI (expected in WSL)\n");
+ 		return 0;
+ 	}
+ 
+diff --git a/arch/x86/pci/init.c b/arch/x86/pci/init.c
+index 0bb3b8b..c9875e8 100644
+--- a/arch/x86/pci/init.c
++++ b/arch/x86/pci/init.c
+@@ -39,8 +39,8 @@ static __init int pci_arch_init(void)
+ 	pci_direct_init(type);
+ 
+ 	if (!raw_pci_ops && !raw_pci_ext_ops)
+-		printk(KERN_ERR
+-		"PCI: Fatal: No config space access function found\n");
++		printk(KERN_INFO
++		"PCI: no config space access function found (expected in WSL)\n");
+ 
+ 	dmi_check_pciprobe();
+ 
 diff --git a/drivers/clocksource/hyperv_timer.c b/drivers/clocksource/hyperv_timer.c
 index dddfff4..cdf0e42 100644
 --- a/drivers/clocksource/hyperv_timer.c
@@ -1594,10 +1638,10 @@ index 0000000..7b44d5b
 +}
 diff --git a/drivers/hv/dxgkrnl/dxgkrnl.h b/drivers/hv/dxgkrnl/dxgkrnl.h
 new file mode 100644
-index 0000000..09d54bb
+index 0000000..7e96137
 --- /dev/null
 +++ b/drivers/hv/dxgkrnl/dxgkrnl.h
-@@ -0,0 +1,1074 @@
+@@ -0,0 +1,1087 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +
 +/*
@@ -2669,6 +2713,19 @@ index 0000000..09d54bb
 +		DXG_ERR("Ioctl failed: %d", ret);	\
 +	else						\
 +		DXG_TRACE("Ioctl returned: %d", ret);	\
++} while (0)
++
++/*
++ * Query-adapter-info / is-feature-enabled are optional probes; the WSL host
++ * legitimately returns -EINVAL/-ENOENT for information types it does not
++ * implement. Do not log those as errors on every session.
++ */
++#define DXG_TRACE_IOCTL_END_EXPECTED(ret) do {			\
++	if (ret == -EINVAL || ret == -ENOENT || ret == -ENODEV)	\
++		dev_dbg(DXGDEV, "%s: Ioctl returned (expected): %d",	\
++			__func__, ret);					\
++	else							\
++		DXG_TRACE_IOCTL_END(ret);			\
 +} while (0)
 +
 +#endif
@@ -10588,7 +10645,7 @@ index 0000000..23eec30
 +#endif
 diff --git a/drivers/hv/dxgkrnl/ioctl.c b/drivers/hv/dxgkrnl/ioctl.c
 new file mode 100644
-index 0000000..31bfdcd
+index 0000000..7645ee2
 --- /dev/null
 +++ b/drivers/hv/dxgkrnl/ioctl.c
 @@ -0,0 +1,6127 @@
@@ -11262,7 +11319,7 @@ index 0000000..31bfdcd
 +	if (adapter)
 +		kref_put(&adapter->adapter_kref, dxgadapter_release);
 +
-+	DXG_TRACE_IOCTL_END(ret);
++	DXG_TRACE_IOCTL_END_EXPECTED(ret);
 +	return ret;
 +}
 +
@@ -16559,7 +16616,7 @@ index 0000000..31bfdcd
 +	if (adapter)
 +		kref_put(&adapter->adapter_kref, dxgadapter_release);
 +
-+	DXG_TRACE_IOCTL_END(ret);
++	DXG_TRACE_IOCTL_END_EXPECTED(ret);
 +	return ret;
 +}
 +

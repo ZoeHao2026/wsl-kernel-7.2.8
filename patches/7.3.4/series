@@ -1,2 +1,3 @@
 0001-port-Microsoft-WSL2-6.18.58-onto-Linux-7.3.4.patch
 0002-swiotlb-pass-vaddr-and-set-cc_shared.patch
+0003-quiet-wsl-benign-logs.patch

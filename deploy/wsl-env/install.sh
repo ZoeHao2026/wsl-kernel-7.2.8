@@ -49,6 +49,8 @@ ZRAM_HELPER=/usr/local/libexec/zram-wsl-setup
 SYSCTL=/etc/sysctl.d/90-wsl-zram-sysctl.conf
 SECURITYFS_UNIT=/etc/systemd/system/wsl-securityfs.service
 APPARMOR_DROPIN=/etc/systemd/system/apparmor.service.d/20-wsl-boot.conf
+JOURNALD_CONF=/etc/systemd/journald.conf.d/99-wsl-journal-volatile.conf
+SYSTEMD_STOP_CONF=/etc/systemd/system.conf.d/99-wsl-stop.conf
 GPUBIN=/usr/local/bin/wsl-gpu
 
 changed=0
@@ -114,6 +116,12 @@ do_status() {
 	printf '  %-52s %s\n' "$GPUBIN" "$([ -x "$GPUBIN" ] && echo 已装 || echo 未装)"
 	if [ -x "$GPUBIN" ]; then "$GPUBIN" status; fi
 	echo
+	echo "=== 5. journal / 关机窗口 ==="
+	printf '  %-52s %s\n' "$JOURNALD_CONF" "$([ -f "$JOURNALD_CONF" ] && echo 已装 || echo 未装)"
+	printf '  %-52s %s\n' "journal Storage" "$(grep -E '^Storage=' "$JOURNALD_CONF" 2>/dev/null | cut -d= -f2 || echo 持久/默认)"
+	printf '  %-52s %s\n' "$SYSTEMD_STOP_CONF" "$([ -f "$SYSTEMD_STOP_CONF" ] && echo 已装 || echo 未装)"
+	printf '  %-52s %s\n' "systemd DefaultTimeoutStopSec" "$(systemctl show -p DefaultTimeoutStopUSec --value 2>/dev/null || echo -)"
+	echo
 	echo "=== 内核能力检查 ==="
 	printf '  %-52s %s\n' "uname -r" "$(uname -r)"
 	printf '  %-52s %s\n' "CONFIG_ZRAM=m"        "$(kconfig_is CONFIG_ZRAM m && echo 支持 || echo 不支持)"
@@ -126,7 +134,7 @@ do_install() {
 	need_root "$@"
 	log "从 $ASSETS 安装到系统"
 	echo
-	echo "=== 1/4 X11 socket 启动竞态兜底 ==="
+	echo "=== 1/5 X11 socket 启动竞态兜底 ==="
 	install_if_diff "$ASSETS/50-wsl-display.sh"          "$PROFILE"   644
 	install_if_diff "$ASSETS/ensure-wsl-x11-socket.sh"   "$HELPER"    755
 	install_if_diff "$ASSETS/wsl-x11-socket.service"     "$UNIT"      644
@@ -145,7 +153,7 @@ do_install() {
 	printf '    2026-10-24 优化版实测 5/5 冷启动可用；若仍失败，登录 shell 由 profile.d 兜底。\n'
 	printf '  · /tmp/.X11-unix/X0 -> %s\n' "$([ -S /tmp/.X11-unix/X0 ] && echo 就绪 || echo '当前不可用（登录时由 profile.d 兜底）')"
 	echo
-	echo "=== 2/4 zram 压缩交换 ==="
+	echo "=== 2/5 zram 压缩交换 ==="
 	if ! kconfig_is CONFIG_ZRAM m && ! kconfig_is CONFIG_ZRAM y; then
 		log "  ! 当前内核没有 CONFIG_ZRAM，跳过 zram（本仓库 7.3.4 配置里有）"
 	else
@@ -163,7 +171,7 @@ do_install() {
 		fi
 	fi
 	echo
-	echo "=== 3/4 AppArmor / securityfs ==="
+	echo "=== 3/5 AppArmor / securityfs ==="
 	install_if_diff "$ASSETS/wsl-securityfs.service" "$SECURITYFS_UNIT" 644
 	if [ "$DRY" = 1 ]; then
 		act "install -d $(dirname "$APPARMOR_DROPIN")"
@@ -183,9 +191,28 @@ do_install() {
 			"$(aa-status 2>/dev/null | awk '/profiles are loaded/{print $1}' || echo '?')"
 	fi
 	echo
-	echo "=== 4/4 wsl-gpu 开关 ==="
+	echo "=== 4/5 wsl-gpu 开关 ==="
 	install_if_diff "$ASSETS/wsl-gpu" "$GPUBIN" 755
 	printf '  · 用法: wsl-gpu status | on | off | test\n'
+	echo
+	echo "=== 5/5 journal / 关机窗口 ==="
+	if [ "$DRY" = 1 ]; then
+		act "install -d $(dirname "$JOURNALD_CONF") $(dirname "$SYSTEMD_STOP_CONF")"
+	else
+		install -d -m 755 "$(dirname "$JOURNALD_CONF")" "$(dirname "$SYSTEMD_STOP_CONF")"
+	fi
+	if install_if_diff "$ASSETS/99-wsl-journal-volatile.conf" "$JOURNALD_CONF" 644; then
+		if [ "$DRY" = 1 ]; then
+			act "systemctl restart systemd-journald"
+		else
+			systemctl restart systemd-journald >/dev/null 2>&1 || true
+			printf '  + journald 已切换到 volatile（日志只保留当前 boot）\n'
+		fi
+	else
+		printf '  · journald 已是 volatile 配置\n'
+	fi
+	install_if_diff "$ASSETS/99-wsl-stop.conf" "$SYSTEMD_STOP_CONF" 644
+	printf '  · DefaultTimeoutStopSec=5s 在下次 WSL 重启后生效，保证关机落在 WSL 的 10 秒窗口内\n'
 	echo
 	if [ "$DRY" = 1 ]; then
 		log "dry-run 结束，没有做任何修改。"
@@ -204,12 +231,13 @@ do_uninstall() {
 	log "卸载本脚本安装的内容（其它配置不动）"
 	echo
 	if [ "$DRY" = 1 ]; then
-		for f in "$PROFILE" "$UNIT" "$HELPER" "$ZRAM_UNIT" "$ZRAM_HELPER" "$SYSCTL" "$SECURITYFS_UNIT" "$APPARMOR_DROPIN" "$GPUBIN"; do
+		for f in "$PROFILE" "$UNIT" "$HELPER" "$ZRAM_UNIT" "$ZRAM_HELPER" "$SYSCTL" "$SECURITYFS_UNIT" "$APPARMOR_DROPIN" "$JOURNALD_CONF" "$SYSTEMD_STOP_CONF" "$GPUBIN"; do
 			[ -e "$f" ] && act "删除 $f"
 		done
 		act "systemctl disable --now wsl-x11-socket.service zram-wsl.service wsl-securityfs.service"
 		act "swapoff /dev/zram0（若在用）"
 		act "chattr -i /tmp/.X11-unix（若被加了 immutable）"
+		act "systemctl restart systemd-journald"
 		log "dry-run 结束。"
 		return
 	fi
@@ -217,7 +245,7 @@ do_uninstall() {
 	systemctl disable --now zram-wsl.service >/dev/null 2>&1
 	systemctl disable --now wsl-securityfs.service >/dev/null 2>&1
 	swapoff /dev/zram0 2>/dev/null || true
-	for f in "$PROFILE" "$UNIT" "$HELPER" "$ZRAM_UNIT" "$ZRAM_HELPER" "$SYSCTL" "$SECURITYFS_UNIT" "$APPARMOR_DROPIN" "$GPUBIN"; do
+	for f in "$PROFILE" "$UNIT" "$HELPER" "$ZRAM_UNIT" "$ZRAM_HELPER" "$SYSCTL" "$SECURITYFS_UNIT" "$APPARMOR_DROPIN" "$JOURNALD_CONF" "$SYSTEMD_STOP_CONF" "$GPUBIN"; do
 		if [ -e "$f" ]; then rm -f "$f" && printf '  - 已删除    %s\n' "$f"; fi
 	done
 	# 解除 immutable，否则 /tmp/.X11-unix 之后无法被正常管理
@@ -226,6 +254,7 @@ do_uninstall() {
 	fi
 	systemctl daemon-reload
 	sysctl --system >/dev/null 2>&1 || true
+	systemctl restart systemd-journald >/dev/null 2>&1 || true
 	log "完成。"
 	log "注意: /tmp/.X11-unix 与 .wslconfig 的 memory= 不在卸载范围内 ——"
 	log "      前者由 WSL 自己管理，后者请手动编辑 %USERPROFILE%\\.wslconfig。"

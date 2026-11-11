@@ -40,7 +40,7 @@ param(
     # Empty = follow the newest release; pin an exact build with -Tag.
     [string]$Tag = '',
     [int]$PartCount = 34,
-    [string]$ExpectedVhdxSha256 = '369502e174626874362b06973cdcf8a07a110d7f6f38413e460ca3c3433f61bd',
+    [string]$ExpectedVhdxSha256 = '96e7165ac5fa2039e55a1b2d0f85f53573b21c54d07e9f3e49db4b54aea640b9',
     [switch]$UseDirectUrl,
     [switch]$KeepParts
 )

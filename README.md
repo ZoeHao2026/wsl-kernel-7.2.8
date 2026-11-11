@@ -3,7 +3,7 @@
 将 **Microsoft WSL2 内核改动**前向移植到 **Linux 7.3.4 stable** 的补丁集、
 配置、构建脚本与一键部署。
 
-> 仓库名 `wsl-kernel-7.2.8` 是 7.2.8 时期的历史命名；从 `v7.3.4-wsl-kernel.1`
+> 仓库名 `wsl-kernel-7.2.8` 是 7.2.8 时期的历史命名；从 `v7.3.4-wsl-kernel.2`
 > 起，`releases/latest` 指向 7.3.4。旧 release 与旧 tag 原样保留，可随时回滚。
 
 - 目标版本：`7.3.4`
@@ -49,6 +49,11 @@
 - **AppArmor 冷启动条件**：`apparmor.service` 自带 `ConditionSecurity=apparmor`，
   会在 securityfs 挂载前求值；本版把 `wsl-securityfs.service` + drop-in 纳入
   一键安装，避免 178/179 个 profile 在部分冷启动中被跳过。
+- **WSL 关机/E_UNEXPECTED**：Ubuntu 默认 `DefaultTimeoutStopSec=90s`，Docker/
+  PostgreSQL 等服务稍慢就超过 WSL 的 10 秒关机窗口，宿主 `reboot(RB_POWER_OFF)`
+  硬关机后实例可能停在半终止状态，下一条 `wsl` 命令报
+  `Wsl/Service/E_UNEXPECTED`。安装器写入 `DefaultTimeoutStopSec=5s`（本机实测
+  关机 5–7 秒），10 次命令 + 2 分钟空闲 + 多次起停均未再复现。
 - **构建脚本**：7.2.8 时期的 `make O=` 外部输出目录会因为源码树不干净失败；
   新 `scripts/build.sh` 改为已验证的树内构建，并在结尾逐项校验优化配置。
 - **`.wslconfig` 垃圾目录**：清掉了历史坏引用生成的
@@ -76,9 +81,37 @@
 | `CONFIG_DEBUG_INFO_BTF` | 保持 | eBPF 工具链前提 |
 | `CONFIG_DEFAULT_SECURITY_APPARMOR` | `=y` | Ubuntu 26.04 依赖 AppArmor；LSM 顺序 apparmor 在 selinux 前 |
 
-构建结果：`bzImage` **16,745,472 B**（7.2.8 为 18,166,272 B），
+构建结果：`bzImage` **16,749,568 B**（7.2.8 为 18,166,272 B），
 `Percpu:` **11,616 kB**（7.2.8 基线 11,712 kB），
 `Memory: 24,586,852K/25,164,412K available`。
+
+### 4. 良性 dmesg 日志静默（wsl-kernel.2）
+
+这些消息在 7.2.8/7.3.4 上都被验证为**良性**（不是故障），但会污染
+`dmesg -l err,warn`。`patches/7.3.4/0003-quiet-wsl-benign-logs.patch` 做了三件事：
+
+| 消息 | 原因 | 处理 |
+|---|---|---|
+| `PCI: Fatal: No config space access function found` / `PCI: System does not support PCI` | WSL 没有传统 PCI 配置空间 | 从 `KERN_ERR`/`KERN_WARNING` 降为 `KERN_INFO`（信息仍可查，但不再算错误） |
+| `vmentry_ctrl / vmexit_ctrl unsupported with eVMCS` | KVM 在 Hyper-V 嵌套下用 eVMCS 时屏蔽不支持的 VMX 控制位 | `pr_warn_once` → `pr_info_once` |
+| `dxgkio_query_adapter_info: Ioctl failed: -22` ×10 / `is_feature_enabled` | 宿主对可选适配器信息类型返回 `-EINVAL/-ENOENT`，属正常探测 | 这两个可选 ioctl 的预期错误改用 `dev_dbg`；其他错误仍按 error 记录 |
+
+另外三项环境层处理：
+
+- **journal**：WSL 的 10 秒关机窗口会让持久 journal 每次都被判 unclean。
+  一键安装默认写入 `Storage=volatile`（journal 放 `/run`），`journalctl -b`
+  正常可用，但不再跨 VM 重启保留；需要持久日志时删除
+  `/etc/systemd/journald.conf.d/99-wsl-journal-volatile.conf` 并重启 journald。
+- **关机窗口**：`/etc/systemd/system.conf.d/99-wsl-stop.conf` 把
+  `DefaultTimeoutStopSec` 从 90s 收到 5s，保证 systemd 在 WSL 的 10 秒窗口内
+  退出；本机实测关机 5–7 秒，`wsl --shutdown` 不再触发
+  `InitTerminateInstanceInternal` 硬关机。
+- **`intel_pstate: HWP-disabled hybrid CPU is not supported`**：在 `.wslconfig`
+  的 `kernelCommandLine` 加 `intel_pstate=disable`（WSL 的 CPU 调频由宿主控制，
+  guest 里没有实际意义）。本机已启用。
+
+剩余仍在 `dmesg -l err,warn` 里的只有 `WSL ... CheckConnection`（宿主网络探测）
+和偶尔的 9P `Operation canceled`，两者都不是内核代码路径，详见「已知限制」。
 
 ---
 
@@ -88,9 +121,9 @@
 
 | 附件 | 大小 | 用途 |
 |---|---|---|
-| `bzImage-7.3.4-microsoft-standard-WSL2` | 16,745,472 B | 内核镜像 → `.wslconfig` 的 `kernel=` |
+| `bzImage-7.3.4-microsoft-standard-WSL2` | 16,749,568 B | 内核镜像 → `.wslconfig` 的 `kernel=` |
 | `modules-7.3.4-microsoft-standard-WSL2.vhdx`（34 个分片） | 142,606,336 B | 模块盘（746 个模块）→ `kernelModules=` |
-| `System.map-7.3.4-microsoft-standard-WSL2` | 9,847,930 B | 符号表，调试用 |
+| `System.map-7.3.4-microsoft-standard-WSL2` | 9,848,020 B | 符号表，调试用 |
 | `config-7.3.4-microsoft-standard-WSL2` | 200,019 B | 构建所用的完整配置 |
 | `PART4M-SHA256SUMS` | — | 34 个分片的逐片校验值 |
 | `SHA256SUMS` | — | 上述产物的整文件校验值 |
@@ -101,10 +134,10 @@
 ### 校验值 (SHA-256)
 
 ```
-76364b56fb7555c01a8a790a01dcfb2c1b20a9e9540629e29dbde89db868dc59  bzImage-7.3.4-microsoft-standard-WSL2
-cfc89a93ffa768210e4d191cb5734a962b9955f2a787a81be4e3aeb8ba1cb7aa  System.map-7.3.4-microsoft-standard-WSL2
+ae5a3126a0da90fb3408053239ae8415a4dc59eb35173858e87b01810f98b1ca  bzImage-7.3.4-microsoft-standard-WSL2
+942326b9667397ff17ea4baad5049cea3bfa348fc97160ae77665dd6f84e03a7  System.map-7.3.4-microsoft-standard-WSL2
 f9233c002b5d3a67984a7b55cdf75af9cb32cbf6730f5852ca250a14a6dcf71e  config-7.3.4-microsoft-standard-WSL2
-369502e174626874362b06973cdcf8a07a110d7f6f38413e460ca3c3433f61bd  modules-7.3.4-microsoft-standard-WSL2.vhdx（拼接后）
+96e7165ac5fa2039e55a1b2d0f85f53573b21c54d07e9f3e49db4b54aea640b9  modules-7.3.4-microsoft-standard-WSL2.vhdx（拼接后）
 ```
 
 ### 模块盘为什么是分片的
@@ -130,7 +163,7 @@ release 里的模块盘是 **34 个 4 MiB 分片**
 ```
 
 重建结果应为 **142,606,336 字节**，
-SHA-256 `369502e174626874362b06973cdcf8a07a110d7f6f38413e460ca3c3433f61bd`。
+SHA-256 `96e7165ac5fa2039e55a1b2d0f85f53573b21c54d07e9f3e49db4b54aea640b9`。
 这个结论是实测的：把发布出去的分片重新下载拼接，与原始模块盘逐字节相同。
 
 > 模块数 746（7.2.8 版 963）不是少了功能：新配置对齐 Microsoft 6.18.58.1，
@@ -267,7 +300,7 @@ sudo ./scripts/validate-wsl-kernel.sh /tmp/validate-$(uname -r).txt
 memory=24GB
 kernel=C:/Users/you/wsl-kernel/7.3.4/bzImage-7.3.4-microsoft-standard-WSL2
 kernelModules=C:/Users/you/wsl-kernel/7.3.4/modules-7.3.4-microsoft-standard-WSL2.vhdx
-kernelCommandLine=preempt=lazy
+kernelCommandLine=preempt=lazy intel_pstate=disable
 networkingMode=mirrored
 dnsTunneling=true
 autoProxy=true
@@ -325,6 +358,7 @@ aa-status | head -3                      # 期望列出已加载 profile
 │   └── 7.3.4/
 │       ├── 0001-port-Microsoft-WSL2-6.18.58-onto-Linux-7.3.4.patch
 │       ├── 0002-swiotlb-pass-vaddr-and-set-cc_shared.patch
+│       ├── 0003-quiet-wsl-benign-logs.patch
 │       └── series
 ├── deploy/
 │   ├── bootstrap.ps1 / bootstrap.sh     一条命令入口
@@ -366,7 +400,7 @@ WSL 2.7.10.0 / Windows 10.0.26300.9818 / Ubuntu 26.04 / Intel Core Ultra 5 125H�
 
 | 项目 | 结果 |
 |---|---|
-| 内核启动 | ✅ `7.3.4-microsoft-standard-WSL2`，`uname -v` = `#2 SMP PREEMPT_DYNAMIC Wed Nov 11 20:32:36 CST 2026` |
+| 内核启动 | ✅ `7.3.4-microsoft-standard-WSL2`，`uname -v` = `#3 SMP PREEMPT_DYNAMIC Wed Nov 11 21:12:54 CST 2026` |
 | 启动日志 | ✅ 无 panic / BUG / oops / Call Trace |
 | systemd | ✅ `running`，失败单元 **0** |
 | 启动耗时 | ✅ userspace 4.075–4.446 s（7.2.8 基线 4.237 s，同量级） |
@@ -381,16 +415,21 @@ WSL 2.7.10.0 / Windows 10.0.26300.9818 / Ubuntu 26.04 / Intel Core Ultra 5 125H�
 | 网络 | ✅ mirrored、DNS、HTTPS 出网、`powershell.exe` 互操作正常 |
 | WSLg / 音频 | ✅ `xdpyinfo` 正常；PulseAudio `RDPSink` 正常 |
 | 启动周期 | ✅ 5 次 `wsl --shutdown` + 启动，均回到 7.3.4、失败单元 0、X11 单层挂载 |
+| 良性日志 | ✅ `dmesg -l err,warn` 仅剩 WSL 宿主 `CheckConnection`；PCI/eVMCS/dxg 探测日志已静默 |
+| journal | ✅ `Storage=volatile`，启动无 `corrupted or uncleanly` 提示 |
+| 关机/稳定性 | ✅ `DefaultTimeoutStopSec=5s`，关机 5–7 s；10 次命令 + 2 分钟空闲 + 5+ 次起停无 E_UNEXPECTED |
 
 ### 说明：`journal ... corrupted or uncleanly shut down`
 
-每次启动仍会看到 **2 条**（system + user 各一）journal 损坏提示。彻底定位过：
-关机日志能走到 `poweroff.target` / `Shutting down.`，但 WSL 的 init-systemd 只等
-10 秒（`InitTerminateInstanceInternal`），超时后直接 `reboot(RB_POWER_OFF)` 硬关机，
-journald 来不及做 final close。这是 WSL 宿主的 10 秒关机窗口行为，**不是内核问题**；
-7.2.8 同样存在。之前那 96 条来自 48 次反复重启，本版已随 zram 生命周期修复降到
-每次启动 2 条。杀毒/DB/容器多的机器关机偶尔会超过 10 秒，表现为 `wsl --shutdown`
-约 11 秒返回。
+`wsl-kernel.2` 起一键安装默认把 journal 切到 `Storage=volatile`，因此启动日志里
+**不再出现**这条假损坏提示（本次 boot 内 `journalctl` 照常可用，VM 重启后日志
+不保留）。需要持久日志时可删除 drop-in 并重启 journald，代价是每次 WSL 会话
+重启会重新出现 1–2 条提示：WSL 的 init-systemd 只等 10 秒就
+`reboot(RB_POWER_OFF)`，journald 来不及 final close；关机日志本身能走到
+`poweroff.target`，这是 WSL 宿主行为，**不是内核问题**。
+
+`wsl --shutdown` 偶尔约 11 秒返回，同样是这个 10 秒窗口；杀毒/DB/容器多的机器
+更容易触发。
 
 ---
 
@@ -399,10 +438,18 @@ journald 来不及做 final close。这是 WSL 宿主的 10 秒关机窗口行�
 - **`/mnt/c`、`/mnt/d` 的 9P 性能不是内核能修的**：单文件创建 ext4 0.03 ms vs
   9P 2.6 ms（约 100×）；宿主用 `trans=fd` 且未暴露 virtio-9p 设备，`msize` 调大
   实测无效。要快就把项目放在 `/home/<user>`。
-- **`dxgkio_query_adapter_info: Ioctl failed: -22`**：Windows 侧显卡驱动与 WSL
-  的适配器查询不匹配；7.2.8/7.1.4 上相同。GPU 实际可用（d3d12 测试通过）。
-- **`PCI: Fatal: No config space access function found` / `eVMCS` 提示**：WSL
-  虚拟化环境的固有信息，非缺陷。
+- **`WSL ... CheckConnection: getaddrinfo/connect failed`**：WSL 宿主侧的启动网络
+  探测（约每次会话 2 条），不是内核代码；与 mirrored/DNS/代理时序有关。本机
+  不影响实际出网（`curl https://www.kernel.org/` 200）。
+- **`Exception: Operation canceled @p9io.cpp`**：WSL 宿主 9P 服务在会话切换时
+  取消请求的提示，不是内核路径。
+- **`Wsl/Service/E_UNEXPECTED`**：5 秒关机窗口修复后本机未再复现；WSL 2.7.10
+  服务层在极端情况下仍可能偶发。恢复方式：
+  ```powershell
+  wsl --terminate Ubuntu-26.04
+  wsl -d Ubuntu-26.04 -u root -e true
+  ```
+- **`wsl --shutdown` 偶尔 11 秒**：WSL 的 10 秒关机窗口；不是内核。
 - **本内核只在一台机器上验证过**：Intel Core Ultra 5 125H、WSL 2.7.10.0、
   Windows 10.0.26300.9818、Ubuntu 26.04。NVIDIA/AMD、Hyper-V 嵌套、其它发行版
   未覆盖。
@@ -415,6 +462,8 @@ journald 来不及做 final close。这是 WSL 宿主的 10 秒关机窗口行�
 
 ## 历史版本
 
+- `v7.3.4-wsl-kernel.2`：静默 PCI/eVMCS/dxg 良性日志；journal volatile；`intel_pstate=disable`
+- `v7.3.4-wsl-kernel.1`：Linux 7.3.4 + WSL 6.18.58.1 首个版本
 - `v7.2.8-wsl-kernel.3`：Linux 7.2.8 + WSL 6.18.40.1（一键部署）
 - `v7.2.8-wsl-kernel.2`：配置收敛 + delta 同步
 - `v7.2.8-wsl-kernel.1`：首次 7.2.8 移植

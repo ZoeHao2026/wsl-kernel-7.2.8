@@ -755,12 +755,12 @@ make modules_install INSTALL_MOD_PATH=... INSTALL_MOD_STRIP=1
 |---|---|
 | 构建 | 退出码 0，**0 错误 / 0 警告** |
 | 版本串 | `7.3.4-microsoft-standard-WSL2`（无 `+`） |
-| `bzImage` | 16,745,472 B（7.2.8 18,166,272 B） |
+| `bzImage` | 16,749,568 B（7.2.8 18,166,272 B） |
 | `vmlinux` | 434,501,960 B |
-| `System.map` | 9,847,930 B |
+| `System.map` | 9,848,020 B |
 | `config` | 200,019 B（7,636 行） |
 | 模块 | 746 个 `.ko`（7.2.8 963；新配置关掉大量用不到的驱动） |
-| 模块盘 | 142,606,336 B；flat 布局；34 个 4 MiB 分片；SHA-256 `369502e1…` |
+| 模块盘 | 142,606,336 B；flat 布局；34 个 4 MiB 分片；SHA-256 `96e7165a…` |
 
 ## 7. 真机验证
 
@@ -794,3 +794,117 @@ WSL 2.7.10.0 / Windows 10.0.26300.9818 / Ubuntu 26.04 / Core Ultra 5 125H：
   被一并吸收，series 要相应精简。
 - 关机慢的根因是 systemd-shutdown + WSL 10 秒窗口，不是 zram；不要为了
   "让关机变快"去随意改 swap 单元，先看关机日志停在哪一步。
+---
+
+# 9. wsl-kernel.2：良性日志静默与 journal（2026-11-11）
+
+`.2` 在内核产物上只加了一个补丁：`patches/7.3.4/0003-quiet-wsl-benign-logs.patch`
+（5 个文件，+19/−6）。它不改变任何功能，只把三条已经用 7.2.8/7.3.4 反复验证
+为**良性**的消息降级；另外两项是部署层/启动参数处理。
+
+## 9.1 内核消息分级
+
+| 消息 | 原级别 | 处理后 | 依据 |
+|---|---|---|---|
+| `PCI: Fatal: No config space access function found` | `KERN_ERR` | `KERN_INFO` | WSL 没有传统 PCI 配置空间；`pci_arch_init()` 仍返回 0，PCI 子系统照常初始化 |
+| `PCI: System does not support PCI` | `KERN_WARNING` | `KERN_INFO` | 同上；`hv_pci` 走 VMBus，不依赖这条 |
+| `vmentry_ctrl / vmexit_ctrl unsupported with eVMCS` | `pr_warn_once` | `pr_info_once` | KVM 在 eVMCS 下按 `EVMCS1_SUPPORTED_*` 屏蔽控制位，是设计行为；`/dev/kvm` 与 nested=Y 均正常 |
+| `dxgkio_query_adapter_info: Ioctl failed: -22` ×10 | `DXG_ERR`（`dev_err`） | `dev_dbg`（仅 `-EINVAL/-ENOENT/-ENODEV`） | 宿主对可选适配器信息类型不支持；d3d12 测试仍 `Accelerated: yes` |
+| `dxgkio_is_feature_enabled: Ioctl failed: -22` | `DXG_ERR` | 同上 | 同上 |
+
+`DXG_TRACE_IOCTL_END_EXPECTED()` 只对上述预期错误静默；其他 ioctl 错误仍走
+`DXG_ERR`，不会掩盖真正的失败。
+
+## 9.2 journal：Storage=volatile
+
+WSL 的会话结束会停 `multi-user/swap` 目标，下一次会话再拉起 systemd；持久
+journal 在这种非完整关机下会被判定 unclean，每次启动打 2 条提示。WSL 的
+init-systemd 又只等 10 秒就 `reboot(RB_POWER_OFF)`，无法保证 journald final close
+（关机日志能走到 `poweroff.target`）。
+
+安装器写入 `/etc/systemd/journald.conf.d/99-wsl-journal-volatile.conf`：
+
+```ini
+[Journal]
+Storage=volatile
+RuntimeMaxUse=256M
+```
+
+- 本次 boot 内 `journalctl`/`journalctl -b` 正常；
+- 不再出现 `corrupted or uncleanly`（实测启动 0 条）；
+- 跨 VM 重启不保留日志；需要持久日志时删除 drop-in 并重启 journald，代价是
+  重新出现 1–2 条提示。
+
+## 9.3 intel_pstate
+
+本机 `intel_pstate: HWP-disabled hybrid CPU is not supported` 是 WSL 暴露的
+hybrid vCPU 不带 HWP 导致驱动直接放弃；WSL 的 CPU 调频由宿主控制，guest 侧
+没有实际收益。本机 `.wslconfig` 已加：
+
+```ini
+kernelCommandLine=preempt=lazy intel_pstate=disable
+```
+
+这是**本机推荐项**，不打进内核默认配置；其他机器可按需添加。
+
+## 9.4 仍然存在的日志
+
+`CheckConnection`（WSL 宿主网络探测）与 9P `Operation canceled @p9io.cpp`
+（宿主 9P 会话切换）不是内核代码路径，无法用内核补丁消除；本机出网、`/mnt/c`
+访问、WSLg 均正常。`wsl --shutdown` 偶尔 11 秒同样是 WSL 的 10 秒窗口。
+
+## 9.5 验证
+
+- 构建：0 错误 / 0 警告；`uname -v` = `#3 SMP PREEMPT_DYNAMIC Wed Nov 11 21:12:54 CST 2026`
+- `dmesg -l err,warn`：只剩 2 条 `CheckConnection`
+- `dmesg | grep -c corrupted`：0（volatile）
+- `PCI/eVMCS/dxg`：不再出现在 err/warn（info/debug 仍可按需查）
+- `/dev/dxg`、`/dev/kvm`、zram 3.9G zstd、systemd 0 failed、AppArmor 179
+- 模块盘：142,606,336 B，SHA-256 `96e7165a…`，34 个 4 MiB 分片
+---
+
+# 10. wsl-kernel.2：关机窗口与 E_UNEXPECTED
+
+`.2` 还改了两处 WSL 环境层行为，用于消除「`wsl --shutdown` 11 秒 /
+实例卡死 / E_UNEXPECTED」：
+
+## 10.1 systemd 关机窗口
+
+Ubuntu 默认 `DefaultTimeoutStopSec=90s`，而 WSL 的 `init-systemd` 只等 10 秒
+（`InitTerminateInstanceInternal`）；Docker/PostgreSQL/Redis 等任一服务稍慢，
+systemd 就来不及退出，宿主动用 `reboot(RB_POWER_OFF)` 硬关机，实例可能停在
+半终止状态，下一条 `wsl` 命令报 `Wsl/Service/E_UNEXPECTED`。
+
+安装器写入 `/etc/systemd/system.conf.d/99-wsl-stop.conf`：
+
+```ini
+[Manager]
+DefaultTimeoutStopSec=5s
+DefaultTimeoutAbortSec=5s
+```
+
+本机实测：
+
+- `wsl --shutdown` 5–7 秒完成（此前 11 秒，dmesg 有 `InitTerminate...`），
+  之后 dmesg 不再出现 `systemctl poweroff did not terminate`；
+- 连续 10 次 `wsl` 命令 + 2 分钟空闲 + 多次起停，未再出现 E_UNEXPECTED；
+- PostgreSQL/Docker/Redis/sub2api 重启后均 active，`systemctl --failed` 为 0。
+
+代价：超过 5 秒未退出的服务会被 SIGKILL；PostgreSQL 等自带崩溃恢复。需要更
+保守可改 8s，但必须在 WSL 的 10 秒窗口内留出 systemd-shutdown 的时间。
+
+## 10.2 zram 旧 swap 记录清理
+
+`.1` 的旧 helper 曾用裸设备名 `zram0` 调 `swapon`，`/proc/swaps` 会记成
+`/zram0`（没有 `/dev`），但设备路径实际是 `/dev/zram0`；硬关机后可能留下
+「swap 记录存在、zramctl 却不显示 `[SWAP]`」的坏态，新的幂等检查会误判为
+已有 swap 而跳过。
+
+`.2` 的 helper 在检查时同时要求 `zramctl` 报 `[SWAP]`，否则先把残留的 zram
+swap 逐个 `swapoff`（`/dev/zramN` 与原路径各试一次），再清掉未使用设备并重建。
+实测从 `/zram0` 坏态恢复为 `/dev/zram0` + `[SWAP]`，之后跨会话保持 1 个设备。
+
+## 10.3 仍然存在的 WSL 宿主日志
+
+`CheckConnection`（网络探测）与 `Operation canceled @p9io.cpp`（9P 会话切换）
+来自 WSL 宿主，不是内核代码路径；本机出网、`/mnt/c`、WSLg 均正常。

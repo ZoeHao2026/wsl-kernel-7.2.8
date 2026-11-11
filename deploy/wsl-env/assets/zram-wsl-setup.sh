@@ -35,16 +35,33 @@ fi
 exec 9>"$lock"
 flock -w 5 9 || exit 0
 
-# 已经有任何 zram swap —— 什么都不动
-if zram_swap_exists; then
+# 已经有**可用**的 zram swap —— 什么都不动。
+# 旧版本可能把 swap 记成 /zramN（没有 /dev 前缀），或设备已被 reset 但 swap
+# 记录还在；这两种情况下 zramctl 不会显示 [SWAP]，需要先 swapoff 再重建。
+if zram_swap_exists && /usr/sbin/zramctl --noheadings -o MOUNTPOINT 2>/dev/null | grep -q '\[SWAP\]'; then
 	exit 0
 fi
+
+# 清掉残留/旧命名的 zram swap（设备路径和原路径各试一次）
+for name in $(awk '$1 ~ /^(\/dev\/|\/)?zram[0-9]+$/ { print $1 }' /proc/swaps); do
+	swapoff "/dev/${name##*/}" 2>/dev/null || swapoff "$name" 2>/dev/null || true
+done
 
 mem_kb=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
 size_kb=$((mem_kb / 6))
 # 下限 512 MiB，上限 8 GiB（名义容量；zstd 实际占用远低于此）
 [ "$size_kb" -lt 524288 ] && size_kb=524288
 [ "$size_kb" -gt 8388608 ] && size_kb=8388608
+
+# 清掉未参与 swap 的残留设备，避免 zram0/1/2... 编号累积
+for d in /dev/zram*; do
+	[ -e "$d" ] || continue
+	name=${d##*/}
+	if grep -qE "^(\/dev\/|\/)?${name} " /proc/swaps; then
+		continue
+	fi
+	/usr/sbin/zramctl --reset "$d" 2>/dev/null || true
+done
 
 # 优先复用已存在、且未参与 swap 的 zram 设备；`zramctl --size` 会重置它
 dev=""

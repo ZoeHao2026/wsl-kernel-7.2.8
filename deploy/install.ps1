@@ -43,7 +43,7 @@
     Print what would happen, change nothing.
 
 .EXAMPLE
-    .\deploy\install.ps1 -Tag v7.3.4-wsl-kernel.1
+    .\deploy\install.ps1 -Tag v7.3.4-wsl-kernel.2
 
 .EXAMPLE
     .\deploy\install.ps1 -KernelDir C:\path\to\artifacts
@@ -56,7 +56,7 @@ param(
     # Empty = follow the newest release. Windows PowerShell 5.1 does not accept
     # "latest" as a default for this kind of parameter, so the empty string is
     # used as the "unset" marker and resolved to releases/latest below.
-    # Pin an exact build with e.g. -Tag v7.3.4-wsl-kernel.1.
+    # Pin an exact build with e.g. -Tag v7.3.4-wsl-kernel.2.
     [string]$Tag = '',
     [string]$Repo = 'ZoeHao2026/wsl-kernel-7.2.8',
     [string]$KernelDir,
