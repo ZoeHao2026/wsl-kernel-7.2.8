@@ -635,3 +635,162 @@ select 回来（本次实测确认过，改完仍是 `CONFIG_SCHEDSTATS=y`）。
 中途有一次 `Remove-Item` 删掉了在用的 `bzImage` 而新文件还没就位——
 因为提前做了备份，才没有造成不可启动的状态。**换内核镜像时，先确认备份存在、
 再删旧文件**，顺序不要反。
+
+---
+
+# 7.3.4 移植记录（2026-11-11）
+
+## 1. 基线
+
+| 项目 | 值 |
+|---|---|
+| 上游目标 | `linux-7.3.4.tar.xz` |
+| 上游 SHA-256 | `b11b6df8295e8e991ff040b71aaa4994a8b55caa23b6b092907f195b5840fd1f` |
+| 上游发布 | 2026-11-10（当时 kernel.org 最新 stable；7.4 在 rc2） |
+| WSL 改动来源 | `WSL2-Linux-Kernel`，tag `linux-msft-wsl-6.18.58.1` |
+| WSL tag commit | `a9891719…`（2026-10-27，tag `rolling-lts/wsl/6.18.58.1`） |
+| 移植规模 | 25 文件（16 新增 + 9 修改），补丁 0001 约 530 KB |
+| 工具链 | gcc 15.2.0 / Ubuntu 26.04 / binutils 2.46 / pahole 1.31 |
+
+## 2. `patch` 应用结果：零 reject
+
+把 7.2.8 时代的 `0001` 直接打到 7.3.4 上，`patch -p1 --forward --batch` **退出码 0，
+没有 .rej**。只有 offset（个别 hunk 带 fuzz 0）：
+
+| 文件 | 7.2.8 → 7.3.4 | 处理 |
+|---|---|---|
+| `drivers/hv/Kconfig` | 114 → 114 | 逐字节相同，直接套用 |
+| `drivers/hv/Makefile` | 28 → 28 | 逐字节相同，直接套用 |
+| `arch/x86/kernel/cpu/mshyperv.c` | +13 | hunk 1/2 偏移 +16；`eax` 变量与 `hv_get_hypervisor_version()` 仍在 |
+| `drivers/clocksource/hyperv_timer.c` | −110 | 7.3 删除了 legacy non-Direct-Mode stimer 路径；3 个 hunk 仍可按偏移落位 |
+| `drivers/pci/controller/pci-hyperv.c` | +29 | 上游只改了 `wait_for_response(msg_type)`；我们的 6 个 hunk 不碰它 |
+| `fs/fuse/virtio_fs.c` | +30 | `max_pages_limit` 锚点行仍在（+30） |
+| `include/linux/hyperv.h` | +12 | GUID hunk 位置 +11；`HV_GPUP_DXGK_*` 仍不在上游 |
+| `include/linux/swiotlb.h` | +15 | 插入点仍在 `default_swiotlb_limit()` 之后 |
+| `kernel/dma/swiotlb.c` | +190 | 仍是 6 参数签名，`swiotlb_create_pool` 的追加段仍在 EOF |
+
+结论：**没有任何 hunk 被上游吸收**；7.3.4 需要的只是 offset 适配，加上下面
+两个 7.3-only 的改动。
+
+## 3. 7.3-only 修改 1：`swiotlb` 的 `mem->cc_shared`
+
+7.3 的 `swiotlb` 把「这个池是否已解密/共享」记录在 `struct io_tlb_mem::cc_shared`
+上，并在 `swiotlb_map()` 里按平台拒绝不匹配的池：
+
+```c
+if (cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT)) {
+    if (unlikely(mem->cc_shared != force_dma_unencrypted(dev)))
+        return (phys_addr_t)DMA_MAPPING_ERROR;
+} else if (cc_platform_has(CC_ATTR_HOST_MEM_ENCRYPT)) {
+    if (unlikely(!mem->cc_shared))
+        return (phys_addr_t)DMA_MAPPING_ERROR;
+}
+```
+
+`cc_shared` 是 7.3 才有的字段，6.18（以及 58.1）的 `swiotlb_create_pool()` 不设置它。
+如果不补，普通 WSL 客户机不受影响（非 CC），但在 paravisor/CC 客户机上
+`hv_pci` 池的 VPCI DMA 会静默返回 `DMA_MAPPING_ERROR`。补法与上游
+`swiotlb_create_default_pools()` 一致：
+
+```c
+/* mirror swiotlb_create_default_pools() */
+if (cc_platform_has(CC_ATTR_MEM_ENCRYPT))
+    mem->cc_shared = true;
+set_memory_decrypted(...);
+```
+
+这就是 `patches/7.3.4/0002-swiotlb-pass-vaddr-and-set-cc_shared.patch` 的内容
+（同时包含 7.3 的 `swiotlb_init_io_tlb_pool()` 第 3 个 `vaddr` 参数）。
+
+## 4. 7.3-only 修改 2：`dxgkrnl` 直接采用 58.1
+
+`drivers/hv/dxgkrnl/*` 给 Microsoft 全权维护，没有上游混合代码；本次直接
+用 58.1 的 15 个文件 + `include/uapi/misc/d3dkmthk.h` 整体替换。相对 40.1
+的 delta 约 **912 行**（9 个文件），主要是：
+
+- **native fence sharing**（`5cf9490c15`）：VMBus 接口 44 → 46，新增
+  `CREATENATIVEFENCE`/`OPENNATIVEFENCE_NT` 与 `D3DDDI_NATIVE_FENCE` 等 UAPI；
+- `dxgsyncfile.c` 的引用泄漏修复（40.1 已有，58.1 逐字节相同）；
+- 若干 adapter/ioctl/vmbus 修复。
+
+因此 7.2.8 时代的独立补丁 0002（柔性数组）与 0004（syncfile 泄漏）都**已经被
+并入 0001**，7.3.4 的 series 只剩 0001（移植）+ 0002（swiotlb 适配）。
+
+### 没有采纳的 58.1 改动
+
+| 改动 | 原因 |
+|---|---|
+| `include/linux/hyperv.h` 的 `closer_owns`（rescind 所有权） | 需要 `drivers/hv/channel*.c` 的配套改动，本仓库不携带这些代码 |
+| `swiotlb_create_pool(base, void *vaddr, size, name)` 的 4 参重构 | 与 7.3.4 的 6 参 `swiotlb_init_io_tlb_pool` 目标相同；保持旧 3 参 + 0002 更少改动、已验证 |
+| `arch/arm64/*` synthetic clocks 配套 | 只验证 x86_64；ARM64 未覆盖 |
+| 6.18.58 的通用 stable 内容 | 7.3.4 已包含更新版本，不回灌 |
+
+## 5. 配置
+
+以 58.1 的 `arch/x86/configs/config-wsl` 为起点，`make olddefconfig` 后再叠加
+本仓库已验证的调优项（`scripts/config` 逐项设置，`olddefconfig` 后逐项复核）：
+
+- 保留：`MAXSMP` 关、`NR_CPUS=512`、`SCHEDSTATS`/`LATENCYTOP`/`SCHED_STACK_END_CHECK`/
+  `SLUB_DEBUG`/`PAGE_POISONING`/`STACKDEPOT` 关、`INIT_ON_ALLOC_DEFAULT_ON`、
+  `FORTIFY_SOURCE`、`HARDENED_USERCOPY`、`DEBUG_INFO_BTF`、`HZ=250`、
+  `DEFAULT_SECURITY_APPARMOR`、`ZSWAP`、`LRU_GEN`、`ZRAM`+zstd 后端
+- 新增/修正：`ZRAM_DEF_COMP="zstd"`、`CONFIG_NTFS3_FS=m`、
+  `CONFIG_SQUASHFS_ZSTD=y`、`CONFIG_EROFS_FS_ZIP_ZSTD=y`、
+  `CONFIG_SWIOTLB_DEFAULT_SIZE_MB=64`
+- 对齐 Microsoft：`XEN` 关、`DEBUG_LIST`/`DEBUG_SG` 关、`KFENCE=y`、
+  `MEMCG_V1=y`、LSM 增加 bpf（本仓库保留 apparmor 在 selinux 前的顺序）
+- 明确不启用：`CRASH_DUMP`/`KEXEC`（MS 也关；WSL 的 crash dump 是宿主机制）、
+  `SECURITY_LOCKDOWN`、`IOMMUFD`、`MPTCP`、`SCHED_CLASS_EXT`
+
+## 6. 构建
+
+```bash
+export LOCALVERSION=""
+make -j18
+make -j18 modules
+make modules_install INSTALL_MOD_PATH=... INSTALL_MOD_STRIP=1
+```
+
+| 项目 | 结果 |
+|---|---|
+| 构建 | 退出码 0，**0 错误 / 0 警告** |
+| 版本串 | `7.3.4-microsoft-standard-WSL2`（无 `+`） |
+| `bzImage` | 16,745,472 B（7.2.8 18,166,272 B） |
+| `vmlinux` | 434,501,960 B |
+| `System.map` | 9,847,930 B |
+| `config` | 200,019 B（7,636 行） |
+| 模块 | 746 个 `.ko`（7.2.8 963；新配置关掉大量用不到的驱动） |
+| 模块盘 | 142,606,336 B；flat 布局；34 个 4 MiB 分片；SHA-256 `369502e1…` |
+
+## 7. 真机验证
+
+WSL 2.7.10.0 / Windows 10.0.26300.9818 / Ubuntu 26.04 / Core Ultra 5 125H：
+
+| 项目 | 结果 |
+|---|---|
+| 启动 5+ 周期 | 均 `uname -r` = 7.3.4，systemd `running`，失败单元 0 |
+| 启动耗时 | userspace 4.075–4.446 s（7.2.8 基线 4.237 s） |
+| Percpu | 11,616 kB（7.2.8 11,712 kB） |
+| dxgkrnl / GPU | `/dev/dxg`、`Dxgkrnl` 注册；d3d12 测试 OpenGL 4.6 / Accelerated yes |
+| KVM | `/dev/kvm`，nested=Y |
+| zram | 3.9 GiB zstd，priority 100；每次启动 1 次 reset，无 churn |
+| AppArmor | 179 profiles / 103 enforce |
+| 网络/互操作/GUI/音频 | 全部通过 |
+| 模块 | ntfs3 / wireguard / kvm_intel 加载卸载正常 |
+| 关机 | 3–11 s；`journal ... corrupted` 2 条/启动 |
+
+### 关于 2 条 journal 损坏
+
+关机日志能走到 `poweroff.target` / `Shutting down.`，但 WSL 的
+`init-systemd` 只等 10 秒就 `reboot(RB_POWER_OFF)`；journald 来不及 final close，
+下次启动会报告 system/user 两个 journal 文件 unclean。7.2.8 相同；旧版 96 条是
+48 次反复重启导致的，本版随 zram 生命周期修复降到 2 条/启动。不是内核缺陷。
+
+## 8. 教训
+
+- 7.3 的 `swiotlb` 新增了 per-pool `cc_shared`；跨系列移植时，**编译通过不代表
+  语义正确**（与 7.2.8 的 `swiotlb_init_io_tlb_pool` 参数变更同类）。
+- Microsoft 58.1 的 dxgkrnl 是整体替换最省事的文件集；但独立补丁 0002/0004 会
+  被一并吸收，series 要相应精简。
+- 关机慢的根因是 systemd-shutdown + WSL 10 秒窗口，不是 zram；不要为了
+  "让关机变快"去随意改 swap 单元，先看关机日志停在哪一步。

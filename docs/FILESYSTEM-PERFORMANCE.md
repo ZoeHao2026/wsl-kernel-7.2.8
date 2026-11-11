@@ -1,5 +1,7 @@
 # 跨文件系统性能：Microsoft 的建议在**这台机器**上值多少
 
+> 注：本文主体写于 7.2.8（2026-10）；7.3.4 的配置与实测差异见文末 §8。
+
 本文把 Microsoft 官方文档
 [跨 Windows 和 Linux 文件系统工作 → 跨文件系统的文件存储和性能](https://learn.microsoft.com/zh-cn/windows/wsl/filesystems#file-storage-and-performance-across-file-systems)
 的建议换算成本机实测数字，并交代这个内核在**内核层面**能改什么、不能改什么。
@@ -323,3 +325,57 @@ zram 把 **63 MiB 压到 9.2 MiB（约 2.6×）**，压缩率与容量都健康 
   `msize` 调大实测无效，`trans=virtio` 因宿主未暴露 virtio-9p 设备而不可用。
 - 内核侧这次清掉了从服务器配置继承来的调试/大机器开销，并补上了
   zswap、zram+zstd、MGLRU 这几个与「15 GiB 内存 + 4 GiB swap」直接相关的特性。
+
+---
+
+## 8. 7.3.4 更新（2026-11-11）
+
+### 8.1 配置差异
+
+7.3.4 改用 Microsoft `6.18.58.1` 的 `config-wsl` 为基线，再叠加本仓库已验证的
+调优项。与本文 §4 描述的 7.2.8 版相比：
+
+| 配置 | 7.2.8 | 7.3.4 | 说明 |
+|---|---|---|---|
+| `CONFIG_XEN` | `y` | 关 | 从完整配置继承的无用子系统；去掉后镜像变小 |
+| `CONFIG_DEBUG_LIST` / `DEBUG_SG` | `y` | 关 | 对齐 Microsoft 新配置，去掉热路径调试检查 |
+| `CONFIG_KFENCE` | 关 | `y` | Microsoft 默认；采样开销低 |
+| `CONFIG_ZRAM_DEF_COMP` | `"lzo-rle"` | `"zstd"` | 与服务显式参数对齐 |
+| `CONFIG_NTFS3_FS` | 关 | `m` | 审计缺失项；用于 NTFS 镜像/移动盘 |
+| `CONFIG_SQUASHFS_ZSTD` | 关 | `y` | snap/AppImage 等 |
+| `CONFIG_EROFS_FS_ZIP_ZSTD` | 关 | `y` | 只读镜像 |
+| `CONFIG_SWIOTLB_DEFAULT_SIZE_MB` | — | `64` | 7.3 新符号；与 6.18 行为对齐 |
+| `CONFIG_PREEMPT_*` | `PREEMPT=y` | `PREEMPT_NONE + PREEMPT_DYNAMIC` | 启动参数 `preempt=lazy` 仍生效 |
+| `CONFIG_MAXSMP` / `NR_CPUS` | 关 / 512 | 关 / 512 | 不变 |
+| `CONFIG_SLUB_DEBUG` / `PAGE_POISONING` / `SCHEDSTATS` / `LATENCYTOP` | 关 | 关 | 不变 |
+| `CONFIG_INIT_ON_ALLOC_DEFAULT_ON` / `FORTIFY_SOURCE` / `HARDENED_USERCOPY` | 开 | 开 | 不牺牲这些默认 |
+
+### 8.2 实测
+
+同一台机器、同一套脚本：
+
+| 指标 | 7.2.8 | 7.3.4 | 备注 |
+|---|---|---|---|
+| `bzImage` | 18,166,272 B | **16,745,472 B** | 配置收敛的直接结果 |
+| `Percpu:` | 11,712 kB | **11,616 kB** | 同启动条件 |
+| userspace 启动 | 4.237 s | 4.075–4.446 s | 5+ 次冷启动，同量级 |
+| zram | 1.5 GiB zstd | **3.9 GiB zstd**（1/6 RAM） | priority 100 |
+| 模块数 | 963 | 746 | 关掉 WSL 用不到的驱动；新增 ntfs3 等 |
+| ext4 顺序写（dd 512 MiB，direct） | 2.8 GB/s | 1.9 GB/s | 单次采样，波动 ±50%，**不构成回归证据** |
+| ext4 顺序读 | 5.3 GB/s | 9.1 GB/s | 同上 |
+| 9P 写 / 读 | 198 / 265 MB/s | 241 / 254 MB/s | 宿主侧属性，基本不变 |
+| ext4 create（300 文件） | 18 ms | 9 ms | 噪声主导 |
+| 9P create / unlink | 2.51 / 4.68 ms/文件 | 2.63 / 4.86 ms/文件 | **没有改善**，符合 §2 结论 |
+
+> 和 §5 一样：`/` 上的顺序吞吐是单次 `dd` 采样，run-to-run 波动可达 ±50%；
+> 真正稳定、与配置改动有因果对应的是 `bzImage` 体积、`Percpu:`、zram 容量、
+> 模块数和配置项本身。9P 一栏没有改善，正是 §2 预言的结果。
+
+### 8.3 结论
+
+- 7.3.4 的配置收敛进一步缩小了镜像和 percpu 占用；跨文件系统的 9P 性能依旧
+  由 WSL 宿主决定，和内核版本无关。
+- zram 从 1.5 GiB 提到 3.9 GiB（名义容量，按 MemTotal/6），配合 24 GiB 内存和
+  8 GiB 磁盘 swap；zstd 压缩比约 2–3×，实际内存占用远低于名义值。
+- 启动/关机路径没有出现内核侧回归；关机偶发 >10 s 是 WSL 的 10 秒关机窗口，
+  不是内核问题（详见 `docs/PORTING-NOTES.md` 的 7.3.4 一节）。
